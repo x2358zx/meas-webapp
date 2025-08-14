@@ -1,0 +1,9 @@
+
+services:
+  osc-scope:
+    build: .
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./config.json:/app/config.json
+    restart: unless-stopped

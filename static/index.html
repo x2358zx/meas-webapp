@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>示波器格線校準器（內網版）</title>
+<style>
+ body{font-family:ui-sans-serif,system-ui,Segoe UI,Arial;margin:0;background:#0b0f14;color:#e6edf3}
+ header{padding:12px 16px;background:#111827;position:sticky;top:0}
+ main{display:grid;grid-template-columns: 1fr 380px; gap:16px; padding:16px}
+ .card{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:12px}
+ button,input,select{font-size:14px}
+ .stack>*{margin:6px 0}
+ canvas{max-width:100%;border:1px dashed #374151;border-radius:8px;background:#000}
+ label{display:block;margin:8px 0 4px 0}
+ .muted{color:#9ca3af}
+ .row{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+ .grid-inputs{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+ .grid-inputs label{margin:0}
+ .num{width:100%}
+ .kbd{padding:2px 6px;border:1px solid #374151;border-radius:6px;background:#0f172a;color:#cbd5e1}
+</style>
+</head>
+<body>
+<header><b>示波器格線校準器（內網版）</b></header>
+<main>
+  <section class="card">
+    <div class="stack">
+      <div class="row">
+        <input type="file" id="imgFile" accept="image/*"/>
+        <button id="btnPreview">預覽格線</button>
+        <button id="btnProcess">批次處理（可多選）</button>
+        <input type="file" id="batchFiles" accept="image/*" multiple style="display:none"/>
+      </div>
+      <canvas id="canvas"></canvas>
+      <div class="muted" id="info"></div>
+    </div>
+  </section>
+  <div id="progressWrap" class="card" style="display:none; align-items:center; gap:8px;">
+    <div id="progressText">處理中…</div>
+    <progress id="progressBar" style="width:200px"></progress>
+  </div>
+  <aside class="card">
+    <div class="stack">
+      <label>0 mA 參考線 index (0~8)</label>
+      <input type="range" id="refIdx" min="0" max="8" value="7"/>
+
+      <label>每大格電流 (mA/div)</label>
+      <input type="number" id="maDiv" step="0.1" value="5.0"/>
+
+      <hr/>
+      <div class="grid-inputs">
+        <div>
+          <label>Top Y</label>
+          <input type="number" class="num" id="inTop"/>
+        </div>
+        <div>
+          <label>Bottom Y</label>
+          <input type="number" class="num" id="inBottom"/>
+        </div>
+        <div>
+          <label>Left X</label>
+          <input type="number" class="num" id="inLeft"/>
+        </div>
+        <div>
+          <label>Right X</label>
+          <input type="number" class="num" id="inRight"/>
+        </div>
+      </div>
+
+      <div class="muted">
+        滑鼠：拖邊線或把手移動；<br/>
+        鍵盤：<span class="kbd">↑↓←→</span> = 1px，<span class="kbd">Shift</span>+方向 = 5px，<span class="kbd">Alt</span>+方向 = 10px；<br/>
+        <span class="kbd">Shift</span> 拖曳＝每 5px 吸附。
+      </div>
+
+      <div class="row"><button id="btnSaveCfg">套用到設定檔</button><span class="muted">（即時寫入後端 config.json）</span></div>
+      <hr/>
+      <div class="muted">1. 先預覽對好格線，再批次處理整個資料夾的圖片。<br/>
+	  2. 批次處理點選第二次時，會重載前一批的檔案，不用重新選檔，方便改參數。<br/>
+	  3. 若需要重新選檔案可以F5。<br/>
+	  4. 只要檔名有"_IR?mA"就會吃?的數值處理，沒有寫則是吃config數值。
+	  </div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const cv = document.getElementById('canvas');
+const ctx = cv.getContext('2d');
+const info = document.getElementById('info');
+let selectedBatchFiles = [];   // 記住目前要處理的一批檔
+let isProcessing = false;      // 避免重複送出
+
+
+let imgBitmap = null;
+let imgW=0, imgH=0;
+
+let grid = {top_y: 7, bottom_y: 470, left_x: 12, right_x: 1011};
+let dragging = null;           // 'top' | 'bottom' | 'left' | 'right' | null
+let hoverTarget = null;
+const TOL = 12;                // 命中容差（原本 6 → 12）
+const MIN_GAP = 10;            // 上下/左右最小距離
+
+// 元件
+const refIdxEl = document.getElementById('refIdx');
+const maDivEl = document.getElementById('maDiv');
+const inTop = document.getElementById('inTop');
+const inBottom = document.getElementById('inBottom');
+const inLeft = document.getElementById('inLeft');
+const inRight = document.getElementById('inRight');
+
+// —— 這裡加上「不快取」參數，確保 F5 一定拿到最新 config
+async function fetchCfg(){
+  const r = await fetch('/api/config', {cache: 'no-store'});
+  return await r.json();
+}
+async function saveCfg(cfg){
+  await fetch('/api/config', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json', 'Cache-Control':'no-store'},
+    body: JSON.stringify(cfg)
+  });
+}
+
+// —— 初始化：頁面載入就把 config 套進前端（關鍵修正）
+async function initFromConfig(){
+  try{
+    const cfg = await fetchCfg();
+    const g = cfg.manual_grid_settings.grid_coords;
+    grid.top_y = Number(g.top_y);
+    grid.bottom_y = Number(g.bottom_y);
+    grid.left_x = Number(g.left_x);
+    grid.right_x = Number(g.right_x);
+    refIdxEl.value = Number(cfg.manual_grid_settings.ref_0ma_index);
+    maDivEl.value = Number(cfg.manual_grid_settings.ma_per_division);
+    updateInputs();
+    // 若尚未載圖，先不畫；選了圖再 drawLocalGrid()
+  }catch(e){
+    console.warn('讀取 config 失敗：', e);
+  }
+}
+window.addEventListener('load', initFromConfig);
+
+// —— 工具
+function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+function snap(v, step){ return Math.round(v/step)*step; }
+function updateInputs(){
+  inTop.value = grid.top_y.toFixed(1);
+  inBottom.value = grid.bottom_y.toFixed(1);
+  inLeft.value = grid.left_x.toFixed(1);
+  inRight.value = grid.right_x.toFixed(1);
+}
+function fromInputs(){
+  grid.top_y = clamp(parseFloat(inTop.value)||0, 0, grid.bottom_y-MIN_GAP);
+  grid.bottom_y = clamp(parseFloat(inBottom.value)||0, grid.top_y+MIN_GAP, imgH||1e9);
+  grid.left_x = clamp(parseFloat(inLeft.value)||0, 0, grid.right_x-MIN_GAP);
+  grid.right_x = clamp(parseFloat(inRight.value)||0, grid.left_x+MIN_GAP, imgW||1e9);
+  
+  // 最小間距限制（你原本有 MIN_GAP=10，保持即可）
+  grid.left_x  = Math.min(grid.left_x,  grid.right_x - MIN_GAP);
+  grid.right_x = Math.max(grid.right_x, grid.left_x  + MIN_GAP);
+  grid.top_y   = Math.min(grid.top_y,   grid.bottom_y - MIN_GAP);
+  grid.bottom_y= Math.max(grid.bottom_y,grid.top_y    + MIN_GAP);
+
+}
+
+// —— 繪製
+function drawLocalGrid(){
+  if (!imgBitmap) return;
+  cv.width = imgW; cv.height = imgH;
+  ctx.drawImage(imgBitmap,0,0);
+  const top=grid.top_y, bottom=grid.bottom_y, left=grid.left_x, right=grid.right_x;
+
+  // 外框
+  ctx.strokeStyle = '#00ffff'; ctx.lineWidth=2;
+  ctx.strokeRect(left, top, right-left, bottom-top);
+
+  // 主格
+  const yStep=(bottom-top)/8, xStep=(right-left)/10;
+  ctx.lineWidth=1;
+  ctx.strokeStyle = '#00ffff';
+  for(let i=0;i<=8;i++){ const y=top+i*yStep; ctx.beginPath(); ctx.moveTo(left,y); ctx.lineTo(right,y); ctx.stroke(); }
+  ctx.strokeStyle = '#ff00ff';
+  for(let j=0;j<=10;j++){ const x=left+j*xStep; ctx.beginPath(); ctx.moveTo(x,top); ctx.lineTo(x,bottom); ctx.stroke(); }
+
+  // 0mA line
+  ctx.strokeStyle = '#00ff00'; ctx.lineWidth=2;
+  const ref = parseInt(refIdxEl.value);
+  const refY = top + ref * yStep;
+  ctx.beginPath(); ctx.moveTo(left, refY); ctx.lineTo(right, refY); ctx.stroke();
+  ctx.fillStyle = '#00ff00'; ctx.font = '12px monospace';
+  ctx.fillText(`0mA idx=${ref}`, right+6, refY-4);
+
+  // 把手（四邊中點）
+  ctx.fillStyle = '#eab308'; // 黃色
+  const size = 8;
+  const midTop = {x:(left+right)/2, y:top};
+  const midBottom = {x:(left+right)/2, y:bottom};
+  const midLeft = {x:left, y:(top+bottom)/2};
+  const midRight = {x:right, y:(top+bottom)/2};
+  for (const p of [midTop, midBottom, midLeft, midRight]){
+    ctx.fillRect(p.x - size/2, p.y - size/2, size, size);
+  }
+
+  // 游標提示
+  if (hoverTarget==='left' || hoverTarget==='right') cv.style.cursor='ew-resize';
+  else if (hoverTarget==='top' || hoverTarget==='bottom') cv.style.cursor='ns-resize';
+  else cv.style.cursor='crosshair';
+
+  updateInputs();
+  info.textContent = `top=${top.toFixed(1)}, bottom=${bottom.toFixed(1)}, left=${left.toFixed(1)}, right=${right.toFixed(1)} | 0mA idx=${ref}`;
+}
+
+function pickDragTarget(x,y){
+  // 先看把手（比線條優先，較好抓）
+  const size=10;
+  const near = (px,py)=>Math.abs(x-px)<=size && Math.abs(y-py)<=size;
+
+  const midTop = {x:(grid.left_x+grid.right_x)/2, y:grid.top_y};
+  const midBottom = {x:(grid.left_x+grid.right_x)/2, y:grid.bottom_y};
+  const midLeft = {x:grid.left_x, y:(grid.top_y+grid.bottom_y)/2};
+  const midRight = {x:grid.right_x, y:(grid.top_y+grid.bottom_y)/2};
+
+  if (near(midLeft.x, midLeft.y)) return 'left';
+  if (near(midRight.x, midRight.y)) return 'right';
+  if (near(midTop.x, midTop.y)) return 'top';
+  if (near(midBottom.x, midBottom.y)) return 'bottom';
+
+  // 線條命中
+  if (Math.abs(y-grid.top_y)<=TOL) return 'top';
+  if (Math.abs(y-grid.bottom_y)<=TOL) return 'bottom';
+  if (Math.abs(x-grid.left_x)<=TOL) return 'left';
+  if (Math.abs(x-grid.right_x)<=TOL) return 'right';
+  return null;
+}
+
+function showProgress(text){
+  const w = document.getElementById('progressWrap');
+  const t = document.getElementById('progressText');
+  const p = document.getElementById('progressBar');
+  t.textContent = text || '處理中…';
+  p.removeAttribute('value');      // 不定進度（跑馬燈）
+  w.style.display = 'flex';
+}
+function hideProgress(){
+  const w = document.getElementById('progressWrap');
+  w.style.display = 'none';
+}
+
+
+async function runBatch(files) {
+  if (!files || files.length === 0) { 
+    alert('請先選擇要處理的圖片'); 
+    return; 
+  }
+  if (isProcessing) return; 
+  isProcessing = true;
+  showProgress('上傳中…');    // 下面 B 節會加入這個 UI
+
+  try {
+    const form = new FormData();
+    for (const f of files) form.append('files', f);
+
+    // 直接用 fetch 取回 ZIP；先用簡單版進度條（不顯示百分比）
+    const res = await fetch('/api/process', { method:'POST', body: form });
+    if (!res.ok) throw new Error('伺服器回應失敗');
+
+    showProgress('處理完成，準備下載…');
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'results.zip'; a.click();
+    setTimeout(()=> URL.revokeObjectURL(url), 1000);
+
+    // 重要：清掉 input 的值，讓「選同一批檔案」也會再次觸發 change
+    const input = document.getElementById('batchFiles');
+    input.value = '';
+  } catch (e) {
+    console.error(e);
+    alert('處理失敗：' + e.message);
+  } finally {
+    isProcessing = false;
+    hideProgress();
+  }
+}
+
+
+// —— 事件：滑鼠
+cv.addEventListener('mousemove', e=>{
+  if(!imgBitmap) return;
+  const {x, y} = getCanvasPos(e);
+  if (dragging){
+    let nx=x, ny=y;
+    const snap5 = e.shiftKey; // Shift：吸附
+    if (dragging==='top'){
+      let v = clamp(ny, 0, grid.bottom_y-MIN_GAP);
+      grid.top_y = snap5 ? snap(v,5) : v;
+    }else if (dragging==='bottom'){
+      let v = clamp(ny, grid.top_y+MIN_GAP, imgH);
+      grid.bottom_y = snap5 ? snap(v,5) : v;
+    }else if (dragging==='left'){
+      let v = clamp(nx, 0, grid.right_x-MIN_GAP);
+      grid.left_x = snap5 ? snap(v,5) : v;
+    }else if (dragging==='right'){
+      let v = clamp(nx, grid.left_x+MIN_GAP, imgW);
+      grid.right_x = snap5 ? snap(v,5) : v;
+    }
+    drawLocalGrid();
+  }else{
+    hoverTarget = pickDragTarget(x,y);
+    drawLocalGrid();
+  }
+});
+cv.addEventListener('mousedown', e=>{
+  if(!imgBitmap) return;
+  const {x, y} = getCanvasPos(e);
+  dragging = pickDragTarget(x,y);
+});
+cv.addEventListener('mouseup', ()=> dragging=null);
+cv.addEventListener('mouseleave', ()=> { dragging=null; hoverTarget=null; drawLocalGrid(); });
+
+
+// 取得「畫布內部座標」(考慮 CSS 縮放)
+function getCanvasPos(e) {
+  const r = cv.getBoundingClientRect();
+  const sx = cv.width  / r.width  || 1;
+  const sy = cv.height / r.height || 1;
+  const x = (e.clientX - r.left) * sx;
+  const y = (e.clientY - r.top)  * sy;
+  return {x, y};
+}
+// —— 鍵盤微調（需先點選過畫布）
+window.addEventListener('keydown', e=>{
+  if (!imgBitmap) return;
+  if (!hoverTarget && !dragging) return; // 需先 hover 過某條線或 mousedown 過
+  const step = e.altKey ? 10 : (e.shiftKey ? 5 : 1);
+  let changed=false;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)){
+    e.preventDefault();
+    const target = dragging || hoverTarget;
+    if (e.key==='ArrowUp' && (target==='top'||target==='bottom')){
+      if (target==='top'){ grid.top_y = clamp(grid.top_y - step, 0, grid.bottom_y-MIN_GAP); }
+      else { grid.bottom_y = clamp(grid.bottom_y - step, grid.top_y+MIN_GAP, imgH); }
+      changed=true;
+    }
+    if (e.key==='ArrowDown' && (target==='top'||target==='bottom')){
+      if (target==='top'){ grid.top_y = clamp(grid.top_y + step, 0, grid.bottom_y-MIN_GAP); }
+      else { grid.bottom_y = clamp(grid.bottom_y + step, grid.top_y+MIN_GAP, imgH); }
+      changed=true;
+    }
+    if (e.key==='ArrowLeft' && (target==='left'||target==='right')){
+      if (target==='left'){ grid.left_x = clamp(grid.left_x - step, 0, grid.right_x-MIN_GAP); }
+      else { grid.right_x = clamp(grid.right_x - step, grid.left_x+MIN_GAP, imgW); }
+      changed=true;
+    }
+    if (e.key==='ArrowRight' && (target==='left'||target==='right')){
+      if (target==='left'){ grid.left_x = clamp(grid.left_x + step, 0, grid.right_x-MIN_GAP); }
+      else { grid.right_x = clamp(grid.right_x + step, grid.left_x+MIN_GAP, imgW); }
+      changed=true;
+    }
+  }
+  if (changed) drawLocalGrid();
+});
+
+// —— 右側數字框：直接輸入
+[inTop,inBottom,inLeft,inRight].forEach(el=>{
+  el.addEventListener('change', ()=>{ fromInputs(); drawLocalGrid(); });
+  el.addEventListener('input', ()=>{ fromInputs(); drawLocalGrid(); });
+});
+
+// —— 設定 I/O
+async function fetchCfg(){ const r = await fetch('/api/config'); return await r.json(); }
+async function saveCfg(cfg){ await fetch('/api/config',{method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg)}); }
+
+// —— 檔案 / API / 選圖事件：不再硬重設 5%/95%，只在超界時自動修正（關鍵修正）
+document.getElementById('imgFile').addEventListener('change', async (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  const bmp = await createImageBitmap(await f.arrayBuffer().then(b=>new Blob([b])));
+  imgBitmap = bmp; imgW=bmp.width; imgH=bmp.height;
+
+  // 若格線超出圖片邊界才調整，否則保留 config 設定
+  // 上下
+  if (grid.top_y < 0 || grid.top_y >= imgH) grid.top_y = Math.max(0, 0.05*imgH);
+  if (grid.bottom_y <= 0 || grid.bottom_y > imgH || grid.bottom_y - grid.top_y < MIN_GAP)
+      grid.bottom_y = Math.min(imgH-1, Math.max(grid.top_y+MIN_GAP, 0.95*imgH));
+  // 左右
+  if (grid.left_x < 0 || grid.left_x >= imgW) grid.left_x = Math.max(0, 0.02*imgW);
+  if (grid.right_x <= 0 || grid.right_x > imgW || grid.right_x - grid.left_x < MIN_GAP)
+      grid.right_x = Math.min(imgW-1, Math.max(grid.left_x+MIN_GAP, 0.98*imgW));
+
+  updateInputs();
+  drawLocalGrid();
+});
+
+refIdxEl.addEventListener('input', drawLocalGrid);
+
+document.getElementById('btnPreview').addEventListener('click', async ()=>{
+  const f = document.getElementById('imgFile').files[0];
+  if(!f) return alert('請先選一張圖片');
+  const form = new FormData();
+  form.append('file', f);
+  form.append('grid', JSON.stringify(grid));
+  form.append('ref_idx', refIdxEl.value);
+  form.append('ma_div', maDivEl.value);
+  const res = await fetch('/api/preview-grid',{method:'POST', body: form});
+  const blob = await res.blob();
+  const bmp = await createImageBitmap(blob);
+  imgBitmap = bmp; imgW=bmp.width; imgH=bmp.height;
+  drawLocalGrid();
+});
+
+document.getElementById('btnSaveCfg').addEventListener('click', async ()=>{
+  const cfg = await fetchCfg();
+  cfg.manual_grid_settings.grid_coords = grid;
+  cfg.manual_grid_settings.ref_0ma_index = parseInt(refIdxEl.value);
+  cfg.manual_grid_settings.ma_per_division = parseFloat(maDivEl.value);
+  await saveCfg(cfg);
+  alert('設定已寫入伺服器 config.json');
+});
+
+document.getElementById('btnProcess').addEventListener('click', ()=>{
+  if (selectedBatchFiles.length > 0) {
+    runBatch(selectedBatchFiles);
+  } else {
+    document.getElementById('batchFiles').click();
+  }
+});
+
+document.getElementById('batchFiles').addEventListener('change', async (e)=>{
+  const files = Array.from(e.target.files||[]);
+  if (!files.length) return;
+  selectedBatchFiles = files;     // 記住這批檔案
+  runBatch(selectedBatchFiles);   // 直接送出
+});
+</script>
+</body>
+</html>

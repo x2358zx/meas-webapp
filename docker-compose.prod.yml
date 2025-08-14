@@ -1,0 +1,10 @@
+
+services:
+  osc-scope:
+    # 將 your-username/your-image-name:tag 換成你 Docker Hub 的 Image 名稱
+    image: x2358zx/meas-webapp:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./config.json:/app/config.json
+    restart: unless-stopped
