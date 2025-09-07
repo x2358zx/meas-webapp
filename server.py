@@ -37,13 +37,29 @@ async def api_preview_grid(
     grid: str = Form(...),
     ref_idx: int = Form(...),
     ma_div: Optional[float] = Form(None),
+    ref_idx_y: Optional[int] = Form(None),
+    ref_idx_m: Optional[int] = Form(None),
+    label_clk: Optional[str] = Form(None),
+    label_vdd: Optional[str] = Form(None),
+    label_ivdd: Optional[str] = Form(None),
 ):
     data = await file.read()
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     grid_dict = json.loads(grid)
-    out = preview_grid_overlay(img, grid_dict, int(ref_idx), ma_div)
+    labels = {
+        "clk":  label_clk or "CLK",
+        "vdd":  label_vdd or "VDD",
+        "ivdd": label_ivdd or "I(VDD)"
+    }
+    out = preview_grid_overlay(
+        img, grid_dict, int(ref_idx), ma_div,
+        ref_idx_yellow = (int(ref_idx_y) if ref_idx_y is not None else None),
+        ref_idx_magenta= (int(ref_idx_m) if ref_idx_m is not None else None),
+        labels=labels
+    )
     ok, buf = cv2.imencode(".png", out)
     return StreamingResponse(io.BytesIO(buf.tobytes()), media_type="image/png")
+
 
 @app.post("/api/process")
 async def api_process(files: List[UploadFile] = File(...)):

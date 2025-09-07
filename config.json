@@ -41,7 +41,7 @@
     "_comment_pixel_grouping_window": "收集峰值附近像素時，Y 軸上下擴展的範圍 (+/- 像素)"
   },
   "manual_grid_settings": {
-    "ma_per_division": 5,
+    "ma_per_division": 10,
     "_comment_ma_per_division": "手動模式下，Y 軸每一大格代表的 mA 值",
     "grid_coords": {
       "top_y": 6.835642991958036,
@@ -51,7 +51,9 @@
     },
     "_comment_grid_coords": "手動模式下固定的格線邊界像素座標 (Y軸頂部, Y軸底部, X軸左側, X軸右側)",
     "ref_0ma_index": 7,
-    "_comment_ref_0ma_index": "手動模式下，0mA 參考水平線的索引 (從上到下數，0 代表最上面那條線，共 9 條線，索引 0-8)"
+    "_comment_ref_0ma_index": "手動模式下，0mA 參考水平線的索引 (從上到下數，0 代表最上面那條線，共 9 條線，索引 0-8)",
+    "ref_0ma_index_yellow": 2,
+    "ref_0ma_index_magenta": 4
   },
   "annotation": {
     "font_scale": 0.8,
@@ -68,5 +70,10 @@
   "debugging": {
     "debug_plot": false,
     "_comment_debug_plot": "是否顯示中間過程的除錯圖片 (true: 顯示 / false: 不顯示)"
+  },
+  "overlay_labels": {
+    "clk": "CLK",
+    "vdd": "VDD",
+    "ivdd": "I(VDD)"
   }
 }
