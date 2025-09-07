@@ -6,4 +6,5 @@ services:
       - "8001:8000"
     volumes:
       - ./config.json:/app/config.json
+      - ./static:/app/static:ro
     restart: unless-stopped

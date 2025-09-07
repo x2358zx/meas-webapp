@@ -3,7 +3,7 @@ from typing import List, Optional
 import numpy as np, cv2
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from core import load_config, save_config, preview_grid_overlay, process_one_image
@@ -25,6 +25,12 @@ def root():
 @app.get("/api/config")
 def get_config():
     return load_config()
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    # 直接回傳 static 目錄下的 ico
+    return FileResponse("static/app_icon.ico", media_type="image/x-icon")
+
 
 @app.put("/api/config")
 async def put_config(cfg: dict):
