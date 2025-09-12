@@ -73,7 +73,7 @@
   },
   "overlay_labels": {
     "clk": "CLK",
-    "vdd": "VDD",
-    "ivdd": "I(VDD)"
+    "vdd": "V(VDDP)",
+    "ivdd": "I(VDDP)"
   }
 }

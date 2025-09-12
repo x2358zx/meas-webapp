@@ -31,6 +31,31 @@ def extract_ma_div_from_filename(filename: str):
             return None
     return None
 
+def extract_v_from_filename(filename: str):
+    """
+    從檔名第 4 欄(以 '_' 切)解析電壓字串，格式如：1p100V → 1.1V
+    例：S019_..._1p100V_... → 回傳 '1.1V'
+    未匹配則回傳 None
+    """
+    if not filename:
+        return None
+    try:
+        stem = Path(filename).stem  # 去副檔名
+        parts = stem.split('_')
+        if len(parts) >= 4:
+            token = parts[3].strip()
+            m = re.match(r'(?i)^(\d+)p(\d+)v$', token)
+            if m:
+                int_part, frac_part = m.group(1), m.group(2)
+                # 以小數長度動態格式化，再去除多餘 0 與末尾小數點
+                val = float(f"{int_part}.{frac_part}")
+                decimals = len(frac_part)
+                s = f"{val:.{decimals}f}".rstrip('0').rstrip('.')
+                return f"{s}V"
+    except Exception:
+        return None
+    return None
+
 
 def _detect_grid_coords(cfg):
     g = cfg["manual_grid_settings"]["grid_coords"]
@@ -44,7 +69,7 @@ def _compute_major_lines(top, bottom, left, right):
     major_v = [left + j*x_step for j in range(11)]
     return major_h, major_v, y_step, x_step
 
-def _draw_reference_labels_only(img, cfg):
+def _draw_reference_labels_only(img, cfg, vdd_value_from_filename: str=None):
     """在 img 上只畫三個參考標籤（CLK 黃、VDD 洋紅、I(VDD) 綠），不畫任何線。"""
     # 讀設定裡的格線座標與步距
     top, bottom, left, right = _detect_grid_coords(cfg)
@@ -60,6 +85,10 @@ def _draw_reference_labels_only(img, cfg):
     lbl_clk  = labels.get("clk",  "CLK")
     lbl_vdd  = labels.get("vdd",  "VDD")
     lbl_ivdd = labels.get("ivdd", "I(VDD)")
+    
+    # ★ 若有從檔名解到電壓值，就**動態**把洋紅標籤改成「VDD=1.1V」這種，不寫回 config
+    if vdd_value_from_filename:
+        lbl_vdd = f"{lbl_vdd}={vdd_value_from_filename}"
 
     # 位置規則：與「第一格」(0 div) 距離 <= 1 div → 放第一格上方；否則放到各自 0 mA index 的 y
     x_first = int(left + 0.10 * x_step)     # 左側第一條大格線「內側一點」：讓字靠近左上角，不會壓線
@@ -212,8 +241,9 @@ def process_one_image(img_bgr, filename=""):
         points_ma.append((x, y, float(current)))
     annotated = _annotate(img_bgr, points_ma, cfg)
     
-    # 只加三個標籤，不畫線
-    _draw_reference_labels_only(annotated, cfg)
+    # 只加三個標籤，不畫線；★把檔名解析到的電壓值帶進去（不動 overlay_labels）
+    vdd_from_name = extract_v_from_filename(filename)
+    _draw_reference_labels_only(annotated, cfg, vdd_value_from_filename=vdd_from_name)
 
     return annotated, {
     "levels_detected": len(points_ma),

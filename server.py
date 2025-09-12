@@ -8,6 +8,12 @@ from fastapi.staticfiles import StaticFiles
 
 from core import load_config, save_config, preview_grid_overlay, process_one_image
 
+
+def format_ma_for_name(value: float, decimals: int = 1) -> str:
+    s = f"{value:.{decimals}f}".rstrip("0").rstrip(".")  # 3.50 -> "3.5", 3.0 -> "3"
+    return s.replace(".", "p") + "mA"                    # "3.5" -> "3p5mA"
+
+
 app = FastAPI(title="Meas Web API", version="1.1")
 
 app.add_middleware(
@@ -92,9 +98,13 @@ async def api_process(files: List[UploadFile] = File(...)):
         # 偵測狀態與 mA 值（僅取第一個）
         status = "成功" if info.get("levels_detected", 0) > 0 else "失敗"
         if info.get("values_mA"):
-            val_str = f"{info['values_mA'][0]:.2f}mA"
+            raw = float(info["values_mA"][0])
+            val_str      = f"{raw:.2f}mA"              # <-- 繼續給 _summary 用（不改）
+            val_str_name = format_ma_for_name(raw)     # <-- 給檔名用（3p5mA）
         else:
             val_str = ""
+            val_str_name = ""
+
 
         # 依原始副檔名輸出，檔名加上 _I(<mA>)
         if "." in f.filename:
@@ -103,13 +113,13 @@ async def api_process(files: List[UploadFile] = File(...)):
         else:
             name, ext = f.filename, "png"  # 無副檔名時預設 png
 
-        out_name = f"{name}_I({val_str}).{ext}" if val_str else f"{name}_I().{ext}"
+        out_name = f"{name}_{val_str_name}.{ext}" if val_str_name else f"{name}.{ext}"
 
         # 嘗試用原副檔名編碼；失敗則回退成 png，並同步更新檔名
         enc_ok, buf = cv2.imencode(f".{ext}", annotated)
         final_out_name = out_name
         if not enc_ok:
-            final_out_name = f"{name}_I({val_str}).png" if val_str else f"{name}_I().png"
+            final_out_name = f"{name}_{val_str_name}.png" if val_str_name else f"{name}.png"
             _, buf = cv2.imencode(".png", annotated)
 
         # 寫入圖片（使用最終實際檔名）

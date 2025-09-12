@@ -25,7 +25,7 @@
 </style>
 </head>
 <body>
-<header><b>Current Probe (TE)</b></header>
+<header><b>Current Probe (TE) v 0.0.3</b></header>
 <main>
   <section class="card">
     <div class="stack">
@@ -104,7 +104,8 @@
 	  2. 批次處理點選第二次時，會重載前一批的檔案，不用重新選檔，方便改參數。<br/>
 	  3. 若需要重新選檔案可以F5。<br/>
 	  4. 只要檔名有"_IR?mA"就會吃?的數值處理，沒有寫則是吃config數值。<br/>
-	  5. 一定要儲存設定才批次處理，設定才會進config。
+	  5. 一定要儲存設定才批次處理，設定才會進config。<br/>
+	  6. 注意:僅有洋紅色線條才會帶檔名用底線切的第四個值。
 	  </div>
     </div>
   </aside>
@@ -263,7 +264,8 @@ const placeY = (ref) => (Math.abs(ref - 0) <= 1 ? yFirst : (top + ref * yStep));
 
 // 依序放標籤(顏色與線一致)
 putLabel(labels.clk,  xFirst, placeY(refY), '#ffff00');
-putLabel(labels.vdd,  xFirst, placeY(refM), '#ff00ff');
+// ★ 洋紅：把 VDD 後面接上要的 =X.XV（此處示範 =1.1V）
+putLabel(labels.vdd + '=0.0V', xFirst, placeY(refM), '#ff00ff');
 putLabel(labels.ivdd, xFirst, placeY(refG), '#00ff00');
 
 // 右側提示維持顯示綠色 index
