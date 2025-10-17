@@ -113,13 +113,13 @@ async def api_process(files: List[UploadFile] = File(...)):
         else:
             name, ext = f.filename, "png"  # 無副檔名時預設 png
 
-        out_name = f"{name}_{val_str_name}.{ext}" if val_str_name else f"{name}.{ext}"
+        out_name = f"{name}_I({val_str_name}).{ext}" if val_str_name else f"{name}_I().{ext}"
 
         # 嘗試用原副檔名編碼；失敗則回退成 png，並同步更新檔名
         enc_ok, buf = cv2.imencode(f".{ext}", annotated)
         final_out_name = out_name
         if not enc_ok:
-            final_out_name = f"{name}_{val_str_name}.png" if val_str_name else f"{name}.png"
+            final_out_name = f"{name}_I({val_str_name}).png" if val_str_name else f"{name}_I().png"
             _, buf = cv2.imencode(".png", annotated)
 
         # 寫入圖片（使用最終實際檔名）
