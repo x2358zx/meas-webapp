@@ -1,515 +1,406 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-Hant" class="dark">
+
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<link rel="icon" type="image/x-icon" href="/static/app_icon.ico">
-<link rel="shortcut icon" href="/static/app_icon.ico">
-
-<title>Current Probe (TE)</title>
-<style>
- body{font-family:ui-sans-serif,system-ui,Segoe UI,Arial;margin:0;background:#0b0f14;color:#e6edf3}
- header{padding:12px 16px;background:#111827;position:sticky;top:0}
- main{display:grid;grid-template-columns: 1fr 380px; gap:16px; padding:16px}
- .card{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:12px}
- button,input,select{font-size:14px}
- .stack>*{margin:6px 0}
- canvas{max-width:100%;border:1px dashed #374151;border-radius:8px;background:#000}
- label{display:block;margin:8px 0 4px 0}
- .muted{color:#9ca3af}
- .row{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
- .grid-inputs{display:grid;grid-template-columns:1fr 1fr;gap:8px}
- .grid-inputs label{margin:0}
- .num{width:100%}
- .kbd{padding:2px 6px;border:1px solid #374151;border-radius:6px;background:#0f172a;color:#cbd5e1}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/x-icon" href="/static/app_icon.ico">
+  <title>Current Probe (TE) - 2.0</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            slate: { 850: '#151e2e' }
+          }
+        }
+      }
+    }
+  </script>
 </head>
-<body>
-<header><b>Current Probe (TE) v 0.0.4 (2025/10/17 by R)</b></header>
-<main>
-  <section class="card">
-    <div class="stack">
-      <div class="row">
-        <input type="file" id="imgFile" accept="image/*"/>
-        <button id="btnProcess">批次處理(可多選)</button>
-        <input type="file" id="batchFiles" accept="image/*" multiple style="display:none"/>
-      </div>
-      <canvas id="canvas"></canvas>
-      <div class="muted" id="info"></div>
+
+<body class="bg-slate-950 text-slate-200 h-screen flex flex-col overflow-hidden font-sans">
+
+  <!-- Header -->
+  <header class="h-12 border-b border-slate-800 bg-slate-900 flex items-center justify-between px-4 shrink-0 z-50">
+    <div class="flex items-center gap-3">
+      <!-- Sidebar Toggle Removed from Header -->
+
+      <div class="w-3 h-3 rounded-full bg-emerald-500 shadow shadow-emerald-500/50"></div>
+      <h1 class="font-bold text-slate-100 tracking-wide">Current Probe <span
+          class="text-emerald-400 font-mono text-xs ml-1">v2.1</span></h1>
     </div>
-  </section>
-  <div id="progressWrap" class="card" style="display:none; align-items:center; gap:8px;">
-    <div id="progressText">處理中…</div>
-    <progress id="progressBar" style="width:200px"></progress>
+    <div class="text-xs text-slate-500 font-mono">2026/01/02 Logic Refined</div>
+  </header>
+
+  <!-- Main Workspace -->
+  <div class="flex-1 flex overflow-hidden">
+
+    <!-- Left Sidebar: Controls -->
+    <aside id="sidebar"
+      class="w-80 bg-slate-900 border-r border-slate-800 flex flex-col overflow-y-auto shrink-0 z-40 shadow-xl transition-all duration-300 ease-in-out">
+      <!-- File Input -->
+      <div class="p-4 border-b border-slate-800 relative">
+        <div class="flex justify-between items-center mb-2">
+          <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider">Source Image</label>
+          <!-- Close Button (Inside Sidebar) -->
+          <button id="btnCloseSidebar" class="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+        <input type="file" id="imgFile" accept="image/*"
+          class="block w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-emerald-900 file:text-emerald-300 hover:file:bg-emerald-800" />
+      </div>
+
+      <!-- Accordion items would be nice, but flat list is fine for now -->
+      <div class="p-4 space-y-6">
+        <!-- Reference Lines -->
+        <div class="space-y-3">
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+            <span class="w-1 h-3 bg-sky-500 rounded-full"></span> Reference Lines
+          </h3>
+          <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-3 items-center text-sm">
+            <label class="text-yellow-400 font-mono">Yellow</label>
+            <div class="flex items-center gap-2">
+              <input type="range" id="refIdxY" min="0" max="8" value="7"
+                class="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-yellow-500" />
+            </div>
+
+            <label class="text-fuchsia-400 font-mono">Magenta</label>
+            <div class="flex items-center gap-2">
+              <input type="range" id="refIdxM" min="0" max="8" value="7"
+                class="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-fuchsia-500" />
+            </div>
+
+            <label class="text-emerald-400 font-mono">Green</label>
+            <div class="flex items-center gap-2">
+              <input type="range" id="refIdx" min="0" max="8" value="7"
+                class="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Labels -->
+        <div class="space-y-3">
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+            <span class="w-1 h-3 bg-fuchsia-500 rounded-full"></span> Labels & Units
+          </h3>
+          <div class="grid grid-cols-3 gap-2">
+            <input type="text" id="labelCLK" value="CLK"
+              class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-yellow-300 focus:outline-none focus:border-yellow-500" />
+            <input type="text" id="labelVDD" value="VDD"
+              class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-fuchsia-300 focus:outline-none focus:border-fuchsia-500" />
+            <input type="text" id="labelIVDD" value="I(VDD)"
+              class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-300 focus:outline-none focus:border-emerald-500" />
+          </div>
+          <div>
+            <label class="text-xs text-slate-500 mb-1 block">mA / Division</label>
+            <input type="number" id="maDiv" step="0.1" value="5.0"
+              class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-sky-500" />
+          </div>
+        </div>
+
+        <!-- Grid Coords -->
+        <div class="space-y-3">
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+            <span class="w-1 h-3 bg-slate-500 rounded-full"></span> Manual Grid
+          </h3>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <label class="text-slate-500">Top</label>
+              <input type="number" id="inTop" class="w-full bg-slate-800 border-slate-700 rounded px-1" />
+            </div>
+            <div>
+              <label class="text-slate-500">Bottom</label>
+              <input type="number" id="inBottom" class="w-full bg-slate-800 border-slate-700 rounded px-1" />
+            </div>
+            <div>
+              <label class="text-slate-500">Left</label>
+              <input type="number" id="inLeft" class="w-full bg-slate-800 border-slate-700 rounded px-1" />
+            </div>
+            <div>
+              <label class="text-slate-500">Right</label>
+              <input type="number" id="inRight" class="w-full bg-slate-800 border-slate-700 rounded px-1" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action -->
+      <div class="mt-auto p-4 border-t border-slate-800">
+        <button id="btnSaveCfg"
+          class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700 transition-colors">
+          Save Configuration
+        </button>
+      </div>
+      <!-- Instructions -->
+      <div class="p-4 border-t border-slate-800">
+        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">使用說明</h3>
+        <ul class="text-[10px] text-slate-500 list-decimal list-inside space-y-1 font-mono leading-relaxed">
+          <li>載入圖片後，拖曳格線或把手進行對齊。</li>
+          <li>批次處理會套用目前的格線設定到所有檔案。</li>
+          <li>檔名包含 <code>_IR?mA</code> 會優先使用該數值，否則使用設定值。</li>
+          <li>新功能：自動偵測 CLK 抬升段並進行三點測量。</li>
+          <li>測量點：起始 (峰值)、中間 (40%)、結束 (最後一格中心)。</li>
+          <li>輸出檔名將包含測量數值 (小數點後兩位)。</li>
+          <li>點擊「儲存設定」以保留參數。</li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- Right: Workspace + Gallery -->
+    <main class="flex-1 flex flex-col min-w-0 bg-slate-950 relative">
+
+      <!-- Floating Open Button (Visible when sidebar closed) -->
+      <button id="btnOpenSidebar"
+        class="absolute top-4 left-4 z-30 p-2 bg-slate-900 border border-slate-700 rounded shadow-xl text-slate-400 hover:text-white hidden">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+        </svg>
+      </button>
+
+      <!-- Canvas Area (Fixed height or grow?) -> Let's make it flexible but constrained -->
+      <div id="canvas-area"
+        class="flex-1 overflow-hidden relative canvas-container flex items-center justify-center p-4 transition-all duration-300">
+        <canvas id="canvas"
+          class="shadow-2xl border border-slate-700 rounded bg-black max-w-full max-h-full object-contain"></canvas>
+      </div>
+
+      <!-- Bottom: Batch Process & Gallery (Reduced height) -->
+      <section id="gallery-area"
+        class="h-40 min-h-0 border-t border-slate-800 bg-slate-900 flex flex-col shrink-0 overflow-hidden transition-all duration-300">
+        <!-- Toolbar -->
+        <div class="h-10 border-b border-slate-800 flex items-center justify-between px-4 bg-slate-850">
+          <div class="flex items-center gap-4">
+            <h2 class="font-bold text-sm text-slate-300">Result Gallery</h2>
+            <!-- Hidden Input -->
+            <input type="file" id="batchFiles" accept="image/*" multiple class="hidden" />
+
+            <button id="btnBatch"
+              class="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold rounded shadow-lg shadow-sky-900/50 transition-all flex items-center gap-2">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z">
+                </path>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              </svg>
+              Start Processing
+            </button>
+          </div>
+
+          <div class="flex items-center gap-3">
+            <span id="progressText" class="text-xs text-slate-400 font-mono hidden">Processing...</span>
+            <div id="progressWrap" class="w-32 h-2 bg-slate-800 rounded-full hidden">
+              <div id="progressBar" class="h-full bg-emerald-500 rounded-full w-0 transition-all duration-300"></div>
+            </div>
+
+            <!-- Download Button (Hidden until results exist) -->
+            <button id="btnDownload"
+              class="hidden px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded shadow-lg shadow-emerald-900/50 transition-all flex items-center gap-2">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+              </svg>
+              Download ZIP
+            </button>
+          </div>
+        </div>
+
+        <!-- Grid -->
+        <div class="flex-1 overflow-y-auto p-4 content-start">
+          <!-- Gallery Grid -->
+          <div id="gallery-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            <!-- Cards will be injected here -->
+          </div>
+        </div>
+      </section>
+
+    </main>
   </div>
-  <aside class="card">
-    <div class="stack">
-	  <label>黃 : 0 V 參考線 (index 0 ~ 8)</label>
-      <input type="range" id="refIdxY" min="0" max="8" value="7"/>
-      
-      <label>洋紅 : 0 V 參考線 (index 0 ~ 8)</label>
-      <input type="range" id="refIdxM" min="0" max="8" value="7"/>
-      
-	  <label>綠 : 0 mA 參考線 (index 0 ~ 8)</label>
-      <input type="range" id="refIdx" min="0" max="8" value="7"/>
-	  
-      <hr/>
-      <div class="grid-inputs">
-        <div>
-          <label>黃 : 標籤文字</label>
-          <input type="text" class="num" id="labelCLK" value="CLK"/>
-        </div>
-        <div>
-          <label>洋紅 : 標籤文字</label>
-          <input type="text" class="num" id="labelVDD" value="VDD"/>
-        </div>
-        <div>
-          <label>綠 : 標籤文字</label>
-          <input type="text" class="num" id="labelIVDD" value="I(VDD)"/>
-        </div>
-      </div>
 
-      <label>綠 : 每大格電流 (mA/div) <span class="kbd">*優先判斷檔名</span></label>
-      <input type="number" id="maDiv" step="0.1" value="5.0"/>
+  <!-- Toast Container -->
+  <div id="toast-container"
+    class="fixed top-16 right-4 z-[100] flex flex-col items-end pointer-events-none child:pointer-events-auto"></div>
 
-      <hr/>
-      <div class="grid-inputs">
-        <div>
-          <label>設定邊界 Top Y</label>
-          <input type="number" class="num" id="inTop"/>
-        </div>
-        <div>
-          <label>設定邊界 Bottom Y</label>
-          <input type="number" class="num" id="inBottom"/>
-        </div>
-        <div>
-          <label>設定邊界 Left X</label>
-          <input type="number" class="num" id="inLeft"/>
-        </div>
-        <div>
-          <label>設定邊界 Right X</label>
-          <input type="number" class="num" id="inRight"/>
-        </div>
-      </div>
+  <!-- Lightbox Modal -->
+  <div id="lightbox"
+    class="fixed inset-0 z-[200] bg-black/90 hidden flex items-center justify-center p-4 opacity-0 transition-opacity duration-200">
+    <button id="lightbox-close" class="absolute top-4 right-4 text-slate-400 hover:text-white p-2">
+      <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+      </svg>
+    </button>
+    <img id="lightbox-img" class="max-w-full max-h-full object-contain rounded shadow-2xl" src="" alt="Result" />
+  </div>
 
-      <div class="muted">
-        滑鼠：拖邊線或把手移動；<br/>
-        鍵盤：<span class="kbd">↑↓←→</span> = 1px，<span class="kbd">Shift</span>+方向 = 10px，<span class="kbd">Alt</span>+方向 = 10px；<br/>
-        <span class="kbd">Shift</span> 拖曳＝每 10px 吸附。
-      </div>
+  <script src="/static/js/ui.js"></script>
+  <script src="/static/js/app.js"></script>
+  <script>
+    // Sidebar Logic
+    const sidebar = document.getElementById('sidebar');
+    const btnOpen = document.getElementById('btnOpenSidebar');
+    const btnClose = document.getElementById('btnCloseSidebar');
 
-      <div class="row"><button id="btnSaveCfg">套用到設定檔</button><span class="muted">(即時寫入後端 config.json)</span></div>
-      <hr/>
-      <div class="muted">1. 載入圖片後，直接在畫布拖曳對好格線，再批次處理整個資料夾的圖片。<br/>
-	  2. 批次處理點選第二次時，會重載前一批的檔案，不用重新選檔，方便改參數。<br/>
-	  3. 若需要重新選檔案可以F5。<br/>
-	  4. 只要檔名有"_IR?mA"就會吃?的數值處理，沒有寫則是吃config數值。<br/>
-	  5. 一定要儲存設定才批次處理，設定才會進config。<br/>
-	  6. 注意:僅有洋紅色線條才會帶檔名用底線切的第四個值。
-	  </div>
-    </div>
-  </aside>
-
-</main>
-
-<script>
-const cv = document.getElementById('canvas');
-const ctx = cv.getContext('2d');
-const info = document.getElementById('info');
-let selectedBatchFiles = [];   // 記住目前要處理的一批檔
-let isProcessing = false;      // 避免重複送出
-
-
-let imgBitmap = null;
-let imgW=0, imgH=0;
-
-let grid = {top_y: 7, bottom_y: 470, left_x: 12, right_x: 1011};
-let dragging = null;           // 'top' | 'bottom' | 'left' | 'right' | null
-let hoverTarget = null;
-const TOL = 12;                // 命中容差(原本 6 → 12)
-const MIN_GAP = 10;            // 上下/左右最小距離
-
-// 元件
-const refIdxEl = document.getElementById('refIdx');
-const refIdxYEl = document.getElementById('refIdxY');
-const refIdxMEl = document.getElementById('refIdxM');
-const labelCLKEl  = document.getElementById('labelCLK');
-const labelVDDEl  = document.getElementById('labelVDD');
-const labelIVDDEl = document.getElementById('labelIVDD');
-
-const maDivEl = document.getElementById('maDiv');
-const inTop = document.getElementById('inTop');
-const inBottom = document.getElementById('inBottom');
-const inLeft = document.getElementById('inLeft');
-const inRight = document.getElementById('inRight');
-
-// —— 這裡加上「不快取」參數，確保 F5 一定拿到最新 config
-async function fetchCfg(){
-  const r = await fetch('/api/config', {cache: 'no-store'});
-  return await r.json();
-}
-async function saveCfg(cfg){
-  await fetch('/api/config', {
-    method:'PUT',
-    headers:{'Content-Type':'application/json', 'Cache-Control':'no-store'},
-    body: JSON.stringify(cfg)
-  });
-}
-
-// —— 初始化：頁面載入就把 config 套進前端(關鍵修正)
-async function initFromConfig(){
-  try{
-    const cfg = await fetchCfg();
-    const g = cfg.manual_grid_settings.grid_coords;
-    grid.top_y = Number(g.top_y);
-    grid.bottom_y = Number(g.bottom_y);
-    grid.left_x = Number(g.left_x);
-    grid.right_x = Number(g.right_x);
-    refIdxEl.value = Number(cfg.manual_grid_settings.ref_0ma_index);
-    maDivEl.value = Number(cfg.manual_grid_settings.ma_per_division);
-	refIdxYEl.value = Number((cfg.manual_grid_settings && cfg.manual_grid_settings.ref_0ma_index_yellow) ?? 7);
-    refIdxMEl.value = Number((cfg.manual_grid_settings && cfg.manual_grid_settings.ref_0ma_index_magenta) ?? 7);
-    
-    const labels = (cfg.overlay_labels ?? {clk:'CLK', vdd:'VDD', ivdd:'I(VDD)'});
-    labelCLKEl.value  = labels.clk ?? 'CLK';
-    labelVDDEl.value  = labels.vdd ?? 'VDD';
-    labelIVDDEl.value = labels.ivdd ?? 'I(VDD)';
-
-    updateInputs();
-    // 若尚未載圖，先不畫；選了圖再 drawLocalGrid()
-  }catch(e){
-    console.warn('讀取 config 失敗：', e);
-  }
-}
-window.addEventListener('load', initFromConfig);
-
-// —— 工具
-function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
-function snap(v, step){ return Math.round(v/step)*step; }
-function updateInputs(){
-  inTop.value = grid.top_y.toFixed(1);
-  inBottom.value = grid.bottom_y.toFixed(1);
-  inLeft.value = grid.left_x.toFixed(1);
-  inRight.value = grid.right_x.toFixed(1);
-}
-function fromInputs(){
-  grid.top_y = clamp(parseFloat(inTop.value)||0, 0, grid.bottom_y-MIN_GAP);
-  grid.bottom_y = clamp(parseFloat(inBottom.value)||0, grid.top_y+MIN_GAP, imgH||1e9);
-  grid.left_x = clamp(parseFloat(inLeft.value)||0, 0, grid.right_x-MIN_GAP);
-  grid.right_x = clamp(parseFloat(inRight.value)||0, grid.left_x+MIN_GAP, imgW||1e9);
-  
-  // 最小間距限制(你原本有 MIN_GAP=10，保持即可)
-  grid.left_x  = Math.min(grid.left_x,  grid.right_x - MIN_GAP);
-  grid.right_x = Math.max(grid.right_x, grid.left_x  + MIN_GAP);
-  grid.top_y   = Math.min(grid.top_y,   grid.bottom_y - MIN_GAP);
-  grid.bottom_y= Math.max(grid.bottom_y,grid.top_y    + MIN_GAP);
-
-}
-
-// —— 繪製
-function drawLocalGrid(){
-  if (!imgBitmap) return;
-  cv.width = imgW; cv.height = imgH;
-  ctx.drawImage(imgBitmap,0,0);
-  const top=grid.top_y, bottom=grid.bottom_y, left=grid.left_x, right=grid.right_x;
-
-  // 外框
-  ctx.strokeStyle = '#00ffff'; ctx.lineWidth=2;
-  ctx.strokeRect(left, top, right-left, bottom-top);
-
-  // 主格
-  const yStep=(bottom-top)/8, xStep=(right-left)/10;
-  ctx.lineWidth=1;
-  ctx.strokeStyle = '#00ffff';
-  for(let i=0;i<=8;i++){ const y=top+i*yStep; ctx.beginPath(); ctx.moveTo(left,y); ctx.lineTo(right,y); ctx.stroke(); }
-  ctx.strokeStyle = '#ff00ff';
-  for(let j=0;j<=10;j++){ const x=left+j*xStep; ctx.beginPath(); ctx.moveTo(x,top); ctx.lineTo(x,bottom); ctx.stroke(); }
-
-// ===== 0 mA 參考線(綠、黃、洋紅)與自動標籤 =====
-const refG = parseInt(refIdxEl.value);
-const refY = parseInt(refIdxYEl.value);
-const refM = parseInt(refIdxMEl.value);
-
-const yFirst = top + 0*yStep;         // 第一格(最上條)水平線
-const xFirst = left + 0.10*xStep;        // 第一格(靠左)垂直線的內側一點
-const putLabel = (txt, x, y, color) => {
-  ctx.fillStyle = color; ctx.font = '12px monospace'; // ← 字體大小在這
-  // 畫在文字上方留點空隙避免遮線
-  ctx.fillText(txt, x+4, y + 15); // ← 這行是畫在參考線「下方」
-};
-
-// 三色 0mA 線(視覺化)
-const yG = top + refG * yStep;
-const yY = top + refY * yStep;
-const yM = top + refM * yStep;
-
-ctx.lineWidth = 2;
-// 綠
-ctx.strokeStyle = '#00ff00';
-ctx.beginPath(); ctx.moveTo(left, yG); ctx.lineTo(right, yG); ctx.stroke();
-// 黃(OpenCV 的 BGR 0,255,255 是黃色；Canvas 直接用 #ffff00)
-ctx.strokeStyle = '#ffff00';
-ctx.beginPath(); ctx.moveTo(left, yY); ctx.lineTo(right, yY); ctx.stroke();
-// 洋紅
-ctx.strokeStyle = '#ff00ff';
-ctx.beginPath(); ctx.moveTo(left, yM); ctx.lineTo(right, yM); ctx.stroke();
-
-// 自動標籤位置規則：若 ref 與第一格距離 <= 1 div，就貼在第一格上方；否則貼在各自 0mA 線上
-const labels = {
-  clk: labelCLKEl.value || 'CLK',
-  vdd: labelVDDEl.value || 'VDD',
-  ivdd: labelIVDDEl.value || 'I(VDD)'
-};
-const placeY = (ref) => (Math.abs(ref - 0) <= 1 ? yFirst : (top + ref * yStep));
-
-// 依序放標籤(顏色與線一致)
-putLabel(labels.clk,  xFirst, placeY(refY), '#ffff00');
-// ★ 洋紅：把 VDD 後面接上要的 =X.XV（此處示範 =1.1V）
-putLabel(labels.vdd + '=0.0V', xFirst, placeY(refM), '#ff00ff');
-putLabel(labels.ivdd, xFirst, placeY(refG), '#00ff00');
-
-// 右側提示維持顯示綠色 index
-ctx.fillStyle = '#00ff00';
-ctx.fillText(`0mA idx=${refG}`, right-70, yG+15);
-
-
-  // 把手(四邊中點)
-  ctx.fillStyle = '#eab308'; // 黃色
-  const size = 8;
-  const midTop = {x:(left+right)/2, y:top};
-  const midBottom = {x:(left+right)/2, y:bottom};
-  const midLeft = {x:left, y:(top+bottom)/2};
-  const midRight = {x:right, y:(top+bottom)/2};
-  for (const p of [midTop, midBottom, midLeft, midRight]){
-    ctx.fillRect(p.x - size/2, p.y - size/2, size, size);
-  }
-
-  // 游標提示
-  if (hoverTarget==='left' || hoverTarget==='right') cv.style.cursor='ew-resize';
-  else if (hoverTarget==='top' || hoverTarget==='bottom') cv.style.cursor='ns-resize';
-  else cv.style.cursor='crosshair';
-
-  updateInputs();
-  //info.textContent = `top=${top.toFixed(1)}, bottom=${bottom.toFixed(1)}, left=${left.toFixed(1)}, right=${right.toFixed(1)} | 0mA idx=${refG}`;
-}
-
-function pickDragTarget(x,y){
-  // 先看把手(比線條優先，較好抓)
-  const size=10;
-  const near = (px,py)=>Math.abs(x-px)<=size && Math.abs(y-py)<=size;
-
-  const midTop = {x:(grid.left_x+grid.right_x)/2, y:grid.top_y};
-  const midBottom = {x:(grid.left_x+grid.right_x)/2, y:grid.bottom_y};
-  const midLeft = {x:grid.left_x, y:(grid.top_y+grid.bottom_y)/2};
-  const midRight = {x:grid.right_x, y:(grid.top_y+grid.bottom_y)/2};
-
-  if (near(midLeft.x, midLeft.y)) return 'left';
-  if (near(midRight.x, midRight.y)) return 'right';
-  if (near(midTop.x, midTop.y)) return 'top';
-  if (near(midBottom.x, midBottom.y)) return 'bottom';
-
-  // 線條命中
-  if (Math.abs(y-grid.top_y)<=TOL) return 'top';
-  if (Math.abs(y-grid.bottom_y)<=TOL) return 'bottom';
-  if (Math.abs(x-grid.left_x)<=TOL) return 'left';
-  if (Math.abs(x-grid.right_x)<=TOL) return 'right';
-  return null;
-}
-
-function showProgress(text){
-  const w = document.getElementById('progressWrap');
-  const t = document.getElementById('progressText');
-  const p = document.getElementById('progressBar');
-  t.textContent = text || '處理中…';
-  p.removeAttribute('value');      // 不定進度(跑馬燈)
-  w.style.display = 'flex';
-}
-function hideProgress(){
-  const w = document.getElementById('progressWrap');
-  w.style.display = 'none';
-}
-
-
-async function runBatch(files) {
-  if (!files || files.length === 0) { 
-    alert('請先選擇要處理的圖片'); 
-    return; 
-  }
-  if (isProcessing) return; 
-  isProcessing = true;
-  showProgress('上傳中…');    // 下面 B 節會加入這個 UI
-
-  try {
-    const form = new FormData();
-    for (const f of files) form.append('files', f);
-
-    // 直接用 fetch 取回 ZIP；先用簡單版進度條(不顯示百分比)
-    const res = await fetch('/api/process', { method:'POST', body: form });
-    if (!res.ok) throw new Error('伺服器回應失敗');
-
-    showProgress('處理完成，準備下載…');
-
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'results.zip'; a.click();
-    setTimeout(()=> URL.revokeObjectURL(url), 1000);
-
-    // 重要：清掉 input 的值，讓「選同一批檔案」也會再次觸發 change
-    const input = document.getElementById('batchFiles');
-    input.value = '';
-  } catch (e) {
-    console.error(e);
-    alert('處理失敗：' + e.message);
-  } finally {
-    isProcessing = false;
-    hideProgress();
-  }
-}
-
-
-// —— 事件：滑鼠
-cv.addEventListener('mousemove', e=>{
-  if(!imgBitmap) return;
-  const {x, y} = getCanvasPos(e);
-  if (dragging){
-    let nx=x, ny=y;
-    const snap5 = e.shiftKey; // Shift：吸附
-    if (dragging==='top'){
-      let v = clamp(ny, 0, grid.bottom_y-MIN_GAP);
-      grid.top_y = snap5 ? snap(v,10) : v;
-    }else if (dragging==='bottom'){
-      let v = clamp(ny, grid.top_y+MIN_GAP, imgH);
-      grid.bottom_y = snap5 ? snap(v,10) : v;
-    }else if (dragging==='left'){
-      let v = clamp(nx, 0, grid.right_x-MIN_GAP);
-      grid.left_x = snap5 ? snap(v,10) : v;
-    }else if (dragging==='right'){
-      let v = clamp(nx, grid.left_x+MIN_GAP, imgW);
-      grid.right_x = snap5 ? snap(v,10) : v;
+    function toggleSidebar(show) {
+      if (show) {
+        sidebar.classList.remove('w-0', 'border-0', 'p-0', 'overflow-hidden');
+        sidebar.classList.add('w-80', 'border-r');
+        btnOpen.classList.add('hidden');
+      } else {
+        sidebar.classList.remove('w-80', 'border-r');
+        sidebar.classList.add('w-0', 'border-0', 'p-0', 'overflow-hidden');
+        btnOpen.classList.remove('hidden');
+      }
     }
-    drawLocalGrid();
-  }else{
-    hoverTarget = pickDragTarget(x,y);
-    drawLocalGrid();
-  }
-});
-cv.addEventListener('mousedown', e=>{
-  if(!imgBitmap) return;
-  const {x, y} = getCanvasPos(e);
-  dragging = pickDragTarget(x,y);
-});
-cv.addEventListener('mouseup', ()=> dragging=null);
-cv.addEventListener('mouseleave', ()=> { dragging=null; hoverTarget=null; drawLocalGrid(); });
+
+    btnOpen.addEventListener('click', () => toggleSidebar(true));
+    btnClose.addEventListener('click', () => toggleSidebar(false));
 
 
-// 取得「畫布內部座標」(考慮 CSS 縮放)
-function getCanvasPos(e) {
-  const r = cv.getBoundingClientRect();
-  const sx = cv.width  / r.width  || 1;
-  const sy = cv.height / r.height || 1;
-  const x = (e.clientX - r.left) * sx;
-  const y = (e.clientY - r.top)  * sy;
-  return {x, y};
-}
-// —— 鍵盤微調(需先點選過畫布)
-window.addEventListener('keydown', e=>{
-  if (!imgBitmap) return;
-  if (!hoverTarget && !dragging) return; // 需先 hover 過某條線或 mousedown 過
-  const step = e.altKey ? 10 : (e.shiftKey ? 10 : 1);
-  let changed=false;
-  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)){
-    e.preventDefault();
-    const target = dragging || hoverTarget;
-    if (e.key==='ArrowUp' && (target==='top'||target==='bottom')){
-      if (target==='top'){ grid.top_y = clamp(grid.top_y - step, 0, grid.bottom_y-MIN_GAP); }
-      else { grid.bottom_y = clamp(grid.bottom_y - step, grid.top_y+MIN_GAP, imgH); }
-      changed=true;
-    }
-    if (e.key==='ArrowDown' && (target==='top'||target==='bottom')){
-      if (target==='top'){ grid.top_y = clamp(grid.top_y + step, 0, grid.bottom_y-MIN_GAP); }
-      else { grid.bottom_y = clamp(grid.bottom_y + step, grid.top_y+MIN_GAP, imgH); }
-      changed=true;
-    }
-    if (e.key==='ArrowLeft' && (target==='left'||target==='right')){
-      if (target==='left'){ grid.left_x = clamp(grid.left_x - step, 0, grid.right_x-MIN_GAP); }
-      else { grid.right_x = clamp(grid.right_x - step, grid.left_x+MIN_GAP, imgW); }
-      changed=true;
-    }
-    if (e.key==='ArrowRight' && (target==='left'||target==='right')){
-      if (target==='left'){ grid.left_x = clamp(grid.left_x + step, 0, grid.right_x-MIN_GAP); }
-      else { grid.right_x = clamp(grid.right_x + step, grid.left_x+MIN_GAP, imgW); }
-      changed=true;
-    }
-  }
-  if (changed) drawLocalGrid();
-});
+    document.getElementById('btnBatch').addEventListener('click', () => {
+      document.getElementById('batchFiles').click();
+    });
 
-// —— 右側數字框：直接輸入
-[inTop,inBottom,inLeft,inRight].forEach(el=>{
-  el.addEventListener('change', ()=>{ fromInputs(); drawLocalGrid(); });
-  el.addEventListener('input', ()=>{ fromInputs(); drawLocalGrid(); });
-});
+    document.getElementById('batchFiles').addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
 
+      // Clear previous results & toasts
+      window.clearGallery();
+      window.clearToasts();
+      document.getElementById('btnDownload').classList.add('hidden');
 
-// —— 檔案 / API / 選圖事件：不再硬重設 5%/95%，只在超界時自動修正(關鍵修正)
-document.getElementById('imgFile').addEventListener('change', async (e)=>{
-  const f = e.target.files[0]; if(!f) return;
-  const bmp = await createImageBitmap(await f.arrayBuffer().then(b=>new Blob([b])));
-  imgBitmap = bmp; imgW=bmp.width; imgH=bmp.height;
+      // Toggle Layout: Hide Canvas, Expand Gallery
+      const canvasArea = document.getElementById('canvas-area');
+      const galleryArea = document.getElementById('gallery-area');
 
-  // 若格線超出圖片邊界才調整，否則保留 config 設定
-  // 上下
-  if (grid.top_y < 0 || grid.top_y >= imgH) grid.top_y = Math.max(0, 0.05*imgH);
-  if (grid.bottom_y <= 0 || grid.bottom_y > imgH || grid.bottom_y - grid.top_y < MIN_GAP)
-      grid.bottom_y = Math.min(imgH-1, Math.max(grid.top_y+MIN_GAP, 0.95*imgH));
-  // 左右
-  if (grid.left_x < 0 || grid.left_x >= imgW) grid.left_x = Math.max(0, 0.02*imgW);
-  if (grid.right_x <= 0 || grid.right_x > imgW || grid.right_x - grid.left_x < MIN_GAP)
-      grid.right_x = Math.min(imgW-1, Math.max(grid.left_x+MIN_GAP, 0.98*imgW));
+      // Add classes for hidden canvas / full height gallery
+      canvasArea.classList.add('h-0', 'p-0', 'opacity-0');
+      canvasArea.classList.remove('flex-1', 'p-4');
 
-  updateInputs();
-  drawLocalGrid();
-});
+      galleryArea.classList.remove('h-40', 'shrink-0');
+      galleryArea.classList.add('flex-1');
 
-refIdxEl.addEventListener('input', drawLocalGrid);
-refIdxYEl.addEventListener('input', drawLocalGrid);
-refIdxMEl.addEventListener('input', drawLocalGrid);
-[labelCLKEl, labelVDDEl, labelIVDDEl].forEach(el => {
-  el.addEventListener('input', drawLocalGrid);
-});
+      // Show Progress
+      const pText = document.getElementById('progressText');
+      const pWrap = document.getElementById('progressWrap');
+      const pBar = document.getElementById('progressBar');
+      pText.classList.remove('hidden'); pText.textContent = "Uploading...";
+      pWrap.classList.remove('hidden'); pBar.style.width = '0%';
 
-document.getElementById('btnSaveCfg').addEventListener('click', async ()=>{
-  const cfg = await fetchCfg();
-  cfg.manual_grid_settings.grid_coords = grid;
-  cfg.manual_grid_settings.ref_0ma_index = parseInt(refIdxEl.value);
-  cfg.manual_grid_settings.ma_per_division = parseFloat(maDivEl.value);
-  cfg.manual_grid_settings.ref_0ma_index_yellow  = parseInt(refIdxYEl.value);
-cfg.manual_grid_settings.ref_0ma_index_magenta = parseInt(refIdxMEl.value);
-cfg.overlay_labels = {
-  clk:  labelCLKEl.value || 'CLK',
-  vdd:  labelVDDEl.value || 'VDD',
-  ivdd: labelIVDDEl.value || 'I(VDD)'
-};
+      let successCount = 0;
+      let failCount = 0;
 
-  await saveCfg(cfg);
-  alert('設定已寫入伺服器 config.json');
-});
+      try {
+        // 1. Upload Files
+        const form = new FormData();
+        for (const f of files) form.append('files', f);
 
-document.getElementById('btnProcess').addEventListener('click', ()=>{
-  if (selectedBatchFiles.length > 0) {
-    runBatch(selectedBatchFiles);
-  } else {
-    document.getElementById('batchFiles').click();
-  }
-});
+        pText.textContent = "Processing...";
 
-document.getElementById('batchFiles').addEventListener('change', async (e)=>{
-  const files = Array.from(e.target.files||[]);
-  if (!files.length) return;
-  selectedBatchFiles = files;     // 記住這批檔案
-  runBatch(selectedBatchFiles);   // 直接送出
-});
-</script>
+        const response = await fetch('/api/process_stream', {
+          method: 'POST',
+          body: form
+        });
+
+        if (!response.ok) {
+          throw new Error(`Server Error ${response.status}: ${response.statusText}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        let processedCount = 0;
+        const total = files.length;
+
+        // Read Loop
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n'); // SSE standard separator
+          buffer = lines.pop(); // Keep partial line
+
+          for (const line of lines) {
+            const trim = line.trim();
+            if (!trim.startsWith('data: ')) continue;
+
+            const jsonStr = trim.substring(6); // remove 'data: '
+            if (jsonStr === '[DONE]') {
+              break;
+            }
+
+            try {
+              const data = JSON.parse(jsonStr);
+              // data: { id, filename, status, values: [...], img_url }
+
+              // Update UI
+              window.renderResultCard(data);
+
+              // Convert filename to Short ID for display
+              let displayId = data.filename;
+              try {
+                const parts = data.filename.split('_');
+                if (parts.length >= 8) displayId = parts[7];
+              } catch (e) { }
+
+              // Update Grouped Toast
+              if (data.status === '成功') {
+                successCount++;
+                window.updateStatusToast('success', successCount, displayId);
+              } else {
+                failCount++;
+                window.updateStatusToast('error', failCount, displayId);
+              }
+
+              processedCount++;
+              const pct = Math.round((processedCount / total) * 100);
+              pBar.style.width = `${pct}%`;
+              pText.textContent = `Processing (${processedCount}/${total})`;
+
+            } catch (err) {
+              console.error("SSE Parse Error", err);
+            }
+          }
+        }
+
+        // Done
+        pText.textContent = "Completed";
+        document.getElementById('btnDownload').classList.remove('hidden');
+
+      } catch (e) {
+        console.error(e);
+        window.showToast('Error: ' + e.message, 'error');
+        // Restore progress bar
+        pText.textContent = "Error";
+        pBar.classList.add('bg-red-500');
+      } finally {
+        // Optional: Restore layout? 
+        // User said: "Start Processing的时候... 預覽就可以收起來了"
+        // They didn't explicitly say "restore it after".
+        // Keeping it expanded allows viewing results. 
+        // We can add a "Reset Layout" button or just leave it until new image load.
+        // But if user picks a new single image, we should probably restore.
+        // For now, leave as is. User can reload or we can add logic to single image load.
+      }
+    });
+
+    document.getElementById('btnDownload').addEventListener('click', () => {
+      window.location.href = '/api/results/zip';
+    });
+
+    // Initialize App
+    window.dispatchEvent(new Event('load'));
+  </script>
 </body>
+
 </html>

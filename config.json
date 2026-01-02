@@ -11,7 +11,19 @@
       255,
       255
     ],
-    "_comment_upper_green_hsv": "綠色偵測的 HSV 顏色上限 [H_max, S_max, V_max]"
+    "_comment_upper_green_hsv": "綠色偵測的 HSV 顏色上限 [H_max, S_max, V_max]",
+    "lower_yellow_hsv": [
+      18,
+      50,
+      80
+    ],
+    "_comment_lower_yellow_hsv": "黃色偵測的 HSV 顏色下限 [H_min, S_min, V_min] # 2026/1/1",
+    "upper_yellow_hsv": [
+      38,
+      255,
+      255
+    ],
+    "_comment_upper_yellow_hsv": "黃色偵測的 HSV 顏色上限 [H_max, S_max, V_max] # 2026/1/1"
   },
   "morphology": {
     "kernel_size": [
@@ -44,8 +56,8 @@
     "ma_per_division": 10,
     "_comment_ma_per_division": "手動模式下，Y 軸每一大格代表的 mA 值",
     "grid_coords": {
-      "top_y": 6.835642991958036,
-      "bottom_y": 392.9948474946589,
+      "top_y": 7.010636789854571,
+      "bottom_y": 484.0671333293687,
       "left_x": 13.020506685414823,
       "right_x": 1012.2395136634753
     },

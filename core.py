@@ -176,6 +176,140 @@ def _detect_green_mask(img_bgr, cfg):
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=it)
     return mask
 
+def _detect_yellow_mask(img_bgr, cfg, grid_limits=None): # 2026/1/1
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    lo = np.array(cfg["hsv_detection"]["lower_yellow_hsv"], dtype=np.uint8)
+    hi = np.array(cfg["hsv_detection"]["upper_yellow_hsv"], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lo, hi)
+    k_w, k_h = cfg["morphology"]["kernel_size"]
+    it = int(cfg["morphology"]["iterations"])
+    kernel = np.ones((int(k_h), int(k_w)), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=it)
+    
+    if grid_limits:
+        top, bottom, left, right = grid_limits
+        t, b = int(top)+5, int(bottom)-5
+        l, r = int(left)+5, int(right)-5
+        
+        # Slicing is safer and guaranteed
+        h, w = mask.shape
+        t = max(0, min(t, h))
+        b = max(0, min(b, h))
+        l = max(0, min(l, w))
+        r = max(0, min(r, w))
+        
+        # Clear outside
+        if t > 0: mask[:t, :] = 0
+        if b < h: mask[b:, :] = 0
+        if l > 0: mask[:, :l] = 0
+        if r < w: mask[:, r:] = 0
+        
+        # 2. Contour Filtering (Remove small arrows/noise)
+        # Calculate x_step to determine a reasonable width threshold
+        grid_w = right - left
+        if grid_w > 0:
+            x_step = grid_w / 10.0
+            min_w = x_step * 0.3 # Filter anything narrower than 0.3 grid (Arrows are usually small)
+            
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            clean_mask = np.zeros_like(mask)
+            for c in contours:
+                x, y, w_c, h_c = cv2.boundingRect(c)
+                if w_c > min_w:
+                    cv2.drawContours(clean_mask, [c], -1, 255, -1)
+            mask = clean_mask
+        
+    return mask
+
+def _get_green_y_at_x(green_mask, target_x, window=5): # User req: smaller window (was 10)
+    h, w = green_mask.shape
+    x1 = max(0, int(target_x - window))
+    x2 = min(w, int(target_x + window))
+    strip = green_mask[:, x1:x2]
+    coords = cv2.findNonZero(strip)
+    if coords is None:
+        return None
+    ys = coords[:, 0, 1]
+    if ys.size == 0:
+        return None
+    # User requested Peak Detection (Min Y) instead of Mean (Center) - 2026/01/02
+    return float(np.min(ys))
+
+def _analyze_clk_pulse(yellow_mask, x_step): # 2026/1/1
+    # 先分析黃色像素的 Y 分佈，分離 High Level (Pulse) 與 Low Level (Baseline)
+    coords = cv2.findNonZero(yellow_mask)
+    if coords is None:
+        return []
+    
+    ys = coords[:, 0, 1]
+    y_min = float(np.min(ys))
+    y_max = float(np.max(ys))
+    
+    # 簡單閾值：取 min 與 max 的中間，小於閾值 (較高) 的視為 Pulse
+    # 前提：CLK "lifted" 代表 upward pulse (Active High)
+    y_thresh = (y_min + y_max) / 2.0
+    
+    # 建立 High Level Mask
+    # 使用 numpy 操作比 cv2.inRange 快且方便
+    mask_high = np.zeros_like(yellow_mask)
+    # 這裡需要把符合條件的座標設為 255
+    # coords 格式 (N, 1, 2) -> x, y
+    high_indices = np.where(ys < y_thresh)[0]
+    
+    if len(high_indices) == 0:
+        return []
+        
+    # 將 High pixels 畫回 mask
+    # 為了效率，直接用 indices
+    high_pts = coords[high_indices]
+    for pt in high_pts:
+        mask_high[pt[0,1], pt[0,0]] = 255
+
+    # 找 High Level 的 Contours
+    contours, _ = cv2.findContours(mask_high, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return []
+    
+    # 篩選掉太小的 (寬度 < 1/2 格)
+    valid_contours = []
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        if w > (x_step * 0.5):
+            valid_contours.append(c)
+    
+    if not valid_contours:
+         if contours:
+             c = max(contours, key=cv2.contourArea)
+             # 若面積太小則放棄
+             if cv2.contourArea(c) < 20: return []
+         else:
+             return []
+    else:
+        c = max(valid_contours, key=lambda x: cv2.boundingRect(x)[2])
+
+    x, y, w, h = cv2.boundingRect(c)
+    
+    start_x = x
+    end_x = x + w
+    
+    points_x = []
+    
+    # 1. Start Point: 抬升後約 0.2 個格子 (User request 2026/01/02)
+    p1_x = start_x + (x_step * 0.2)
+    points_x.append(p1_x)
+    
+    # 2. 黃線約 2/5 的位置 (Reverted to previous logic)
+    p2_x = start_x + w * 0.4
+    points_x.append(p2_x)
+    
+    # 3. 黃線抬升的最後一格 (Reverted to previous logic)
+    w_check_last = min(w, x_step)
+    p3_x = end_x - (w_check_last / 2)
+    if p3_x <= p2_x: p3_x = end_x - 1
+    points_x.append(p3_x)
+    
+    return points_x
+
 def _find_flat_levels(mask, img_w, img_h, cfg, top, bottom):
     x0 = int(img_w * cfg["flat_region_detection"]["x_start_factor"])
     x1 = int(img_w * cfg["flat_region_detection"]["x_end_factor"])
@@ -213,42 +347,85 @@ def _annotate(img_bgr, points_ma, cfg):
     fs = float(cfg["annotation"]["font_scale"])
     th = int(cfg["annotation"]["thickness"])
     color = tuple(int(c) for c in cfg["annotation"]["text_color_bgr"])
-    for x, y, mA in points_ma:
+    
+    for i, (x, y, mA) in enumerate(points_ma):
         txt = f"{mA:.2f} mA"
         (tw, thh), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
+        
+        # 決定文字位置：下、上、下 交錯
+        # Even points (0, 2...): 下 (Below)
+        # Odd points (1...): 上 (Above)
+        is_above = (i % 2 != 0)
+        
         tx = max(5, min(int(x - tw/2), out.shape[1]-tw-5))
-        ty = max(thh+10, min(int(y)+thh+10, out.shape[0]-10))
+        
+        if is_above:
+            # 放在點的上方
+            ty = max(thh+5, int(y) - 15)
+        else:
+            # 放在點的下方 (原邏輯)
+            ty = max(thh+10, min(int(y)+thh+15, out.shape[0]-10))
+            
         cv2.putText(out, txt, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, fs, color, th, cv2.LINE_AA)
         cv2.circle(out, (int(x), int(y)), 5, (0,0,255), -1)
     return out
 
-def process_one_image(img_bgr, filename=""):
+def process_one_image(img_bgr, filename=""): # 2026/1/1
     cfg = load_config()
     top, bottom, left, right = _detect_grid_coords(cfg)
-    major_h, major_v, y_step, _ = _compute_major_lines(top, bottom, left, right)
+    major_h, major_v, y_step, x_step = _compute_major_lines(top, bottom, left, right)
     ref_idx = int(cfg["manual_grid_settings"]["ref_0ma_index"])
     ma_div = extract_ma_div_from_filename(filename) or float(cfg["manual_grid_settings"]["ma_per_division"])
-    # mask & levels
-    mask = _detect_green_mask(img_bgr, cfg)
-    levels = _find_flat_levels(mask, img_bgr.shape[1], img_bgr.shape[0], cfg, top, bottom)
-    # mA calculation
+    
+    # 1. 偵測綠色 mask
+    mask_green = _detect_green_mask(img_bgr, cfg)
+    
+    # 2. 偵測黃色 mask (限制在 Grid 內) 與 三個關鍵點
+    mask_yellow = _detect_yellow_mask(img_bgr, cfg, grid_limits=(top, bottom, left, right))
+    target_xs = _analyze_clk_pulse(mask_yellow, x_step)
+    
+    # 計算電流參數
     px_per_div_v = (bottom - top) / 8.0
-    ma_per_px = ma_div / px_per_div_v if px_per_div_v>1e-9 else 0.0
-    y0 = major_h[ref_idx]
+    ma_per_px = ma_div / px_per_div_v if px_per_div_v > 1e-9 else 0.0
+    y0_ref = major_h[ref_idx]
+    
     points_ma = []
-    for (x, y) in levels:
-        current = (y0 - y) * ma_per_px
-        points_ma.append((x, y, float(current)))
+    
+    # 若有偵測到 CLK 三點，就只測這三點
+    if target_xs:
+        for tx in target_xs:
+            gy = _get_green_y_at_x(mask_green, tx)
+            if gy is not None:
+                # 計算 mA
+                # 注意：y 越小(上方) 電流越大? 
+                # 示波器圖通常上面是正電流，下面是負? 
+                # y0 是 0mA 線。
+                # 公式：current = (y0 - y) * ma_per_px
+                # 若 y < y0 (在上方) -> current > 0.
+                val = (y0_ref - gy) * ma_per_px
+                points_ma.append((tx, gy, float(val)))
+            else:
+                # 該點沒綠線，略過或補 0? 暫時略過
+                pass
+    else:
+        # Fallback: 若沒黃線或失敗，是否維持原邏輯?
+        # 用戶目標是「新增偵測CLK黃線...總共會有三次...」
+        # 若失敗，這裡保持空列表，或者 fallback 到舊邏輯?
+        # 為了安全，若沒偵測到黃線，回傳空比較好，避免誤導。
+        # 不過舊邏輯 `_find_flat_levels` 是找所有綠色平坦段。
+        # 暫時回傳空。
+        pass
+        
     annotated = _annotate(img_bgr, points_ma, cfg)
     
-    # 只加三個標籤，不畫線；★把檔名解析到的電壓值帶進去（不動 overlay_labels）
+    # 標籤與電壓
     vdd_from_name = extract_v_from_filename(filename)
     _draw_reference_labels_only(annotated, cfg, vdd_value_from_filename=vdd_from_name)
 
     return annotated, {
-    "levels_detected": len(points_ma),
-    "values_mA": [v for _,_,v in points_ma],
-    "used_ma_per_div": ma_div
-}
+        "levels_detected": len(points_ma),
+        "values_mA": [v for _,_,v in points_ma],
+        "used_ma_per_div": ma_div
+    }
 
 

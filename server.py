@@ -1,5 +1,5 @@
-import io, json, zipfile
-from typing import List, Optional
+import io, json, zipfile, os, shutil
+from typing import List, Optional, Generator
 import numpy as np, cv2
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,9 +9,9 @@ from fastapi.staticfiles import StaticFiles
 from core import load_config, save_config, preview_grid_overlay, process_one_image
 
 
-def format_ma_for_name(value: float, decimals: int = 1) -> str:
-    s = f"{value:.{decimals}f}".rstrip("0").rstrip(".")  # 3.50 -> "3.5", 3.0 -> "3"
-    return s.replace(".", "p") + "mA"                    # "3.5" -> "3p5mA"
+def format_ma_for_name(value: float, decimals: int = 2) -> str: # 2026/1/2
+    s = f"{value:.{decimals}f}"                         # 3.50 -> "3.50"
+    return s.replace(".", "p") + "mA"                    # "3.50" -> "3p50mA"
 
 
 app = FastAPI(title="Meas Web API", version="1.1")
@@ -21,7 +21,20 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
+# Static mounts
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Ensure output directory exists
+OUTPUT_DIR = "/app/OUTPUT"
+DONE_DIR = os.path.join(OUTPUT_DIR, "DONE")
+
+# Create directories immediately so StaticFiles mount works
+os.makedirs(DONE_DIR, exist_ok=True)
+
+
+# Also expose OUTPUT for viewing images
+app.mount("/output", StaticFiles(directory="/app/OUTPUT"), name="output")
+
 
 @app.get("/", response_class=HTMLResponse)
 def root():
@@ -34,13 +47,12 @@ def get_config():
 
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
-    # 直接回傳 static 目錄下的 ico
     return FileResponse("static/app_icon.ico", media_type="image/x-icon")
 
 
 @app.put("/api/config")
 async def put_config(cfg: dict):
-    save_config(cfg); 
+    save_config(cfg)
     return {"ok": True}
 
 @app.post("/api/preview-grid")
@@ -73,67 +85,131 @@ async def api_preview_grid(
     return StreamingResponse(io.BytesIO(buf.tobytes()), media_type="image/png")
 
 
-@app.post("/api/process")
-async def api_process(files: List[UploadFile] = File(...)):
-    """
-    多張圖片處理並打包 results.zip
+# --- New Streaming Logic ---
 
-    - 標註後圖片：沿用原始副檔名，檔名加上 _I(<數值>mA)
-    - 摘要：DONE/_summary.txt（UTF-8 BOM）
-      欄位：狀態,序號,檔名,偵測值 (mA)
-      其中「檔名」= 實際輸出的檔名（與壓縮包內一致）
+def clean_output_dir():
+    """Clear previous results"""
+    if os.path.exists(DONE_DIR):
+        shutil.rmtree(DONE_DIR)
+    os.makedirs(DONE_DIR, exist_ok=True)
+
+@app.post("/api/process_stream")
+async def api_process_stream(files: List[UploadFile] = File(...)):
     """
-    out_zip = io.BytesIO()
-    lines = []   # 給 _summary.txt
+    接收圖片，串流回傳處理結果 (SSE format)。
+    同時將結果存檔至 /app/OUTPUT/DONE 供後續下載。
+    """
+    clean_output_dir()
+    
+    # Summary data collection
+    lines = [] 
     idx = 1
+    
+    async def process_generator():
+        nonlocal idx
+        for f in files:
+            try:
+                data = await f.read()
+                img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+                
+                # Processing
+                annotated, info = process_one_image(img, f.filename)
+                
+                # Status & Values
+                status = "成功" if info.get("levels_detected", 0) > 0 else "失敗"
+                vals = info.get("values_mA", [])
+                
+                val_str = ""
+                val_str_name = ""
+                
+                if vals:
+                    val_str = " / ".join([f"{v:.2f}mA" for v in vals])
+                    raw_first = float(vals[0])
+                    val_str_name = format_ma_for_name(raw_first)
+                
+                # Filename logic
+                if "." in f.filename:
+                    name, ext = f.filename.rsplit(".", 1)
+                    ext = ext.lower()
+                else:
+                    name, ext = f.filename, "png"
+                
+                out_name = f"{name}_I({val_str_name}).{ext}" if val_str_name else f"{name}_I().{ext}"
+                
+                # Encoding & Saving
+                enc_ok, buf = cv2.imencode(f".{ext}", annotated)
+                final_out_name = out_name
+                if not enc_ok:
+                    final_out_name = f"{name}_I({val_str_name}).png" if val_str_name else f"{name}_I().png"
+                    _, buf = cv2.imencode(".png", annotated)
+                
+                # Save to disk
+                save_path = os.path.join(DONE_DIR, final_out_name)
+                with open(save_path, "wb") as out_f:
+                    out_f.write(buf.tobytes())
+                
+                # Record Summary
+                lines.append(f"{status},{idx},{final_out_name},{val_str}")
+                idx += 1
+                
+                # Prepare JSON response
+                # img_url: points to static mount /output/DONE/filename
+                resp_data = {
+                    "id": idx, # Simple counter ID
+                    "filename": final_out_name,
+                    "status": status,
+                    "values": vals,
+                    "img_url": f"/output/DONE/{final_out_name}"
+                }
+                
+                # Yield SSE data line
+                yield f"data: {json.dumps(resp_data)}\n\n"
+                
+            except Exception as e:
+                print(f"Error processing {f.filename}: {e}")
+                err_data = {
+                    "filename": f.filename,
+                    "status": "Error",
+                    "values": [],
+                    "img_url": "" # Can use a placeholder error image if needed
+                }
+                yield f"data: {json.dumps(err_data)}\n\n"
 
+        # Final Summary File
+        try:
+            header = "狀態,序號,檔名,偵測值 (mA)"
+            summary_content = "\ufeff" + header + "\n" + "\n".join(lines)
+            with open(os.path.join(DONE_DIR, "_summary.txt"), "w", encoding="utf-8") as sum_f:
+                sum_f.write(summary_content)
+        except Exception as e:
+            print(f"Summary write error: {e}")
+
+        # End of stream signal
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(process_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/results/zip")
+def api_results_zip():
+    """
+    Pack /app/OUTPUT/DONE into a zip file for download.
+    """
+    if not os.path.exists(DONE_DIR):
+        return {"error": "No results found"}
+        
+    out_zip = io.BytesIO()
     with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as z:
-      for f in files:
-        data = await f.read()
-        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-
-        # 影像處理：得到標註圖與資訊
-        annotated, info = process_one_image(img, f.filename)
-
-        # 偵測狀態與 mA 值（僅取第一個）
-        status = "成功" if info.get("levels_detected", 0) > 0 else "失敗"
-        if info.get("values_mA"):
-            raw = float(info["values_mA"][0])
-            val_str      = f"{raw:.2f}mA"              # <-- 繼續給 _summary 用（不改）
-            val_str_name = format_ma_for_name(raw)     # <-- 給檔名用（3p5mA）
-        else:
-            val_str = ""
-            val_str_name = ""
-
-
-        # 依原始副檔名輸出，檔名加上 _I(<mA>)
-        if "." in f.filename:
-            name, ext = f.filename.rsplit(".", 1)
-            ext = ext.lower()
-        else:
-            name, ext = f.filename, "png"  # 無副檔名時預設 png
-
-        out_name = f"{name}_I({val_str_name}).{ext}" if val_str_name else f"{name}_I().{ext}"
-
-        # 嘗試用原副檔名編碼；失敗則回退成 png，並同步更新檔名
-        enc_ok, buf = cv2.imencode(f".{ext}", annotated)
-        final_out_name = out_name
-        if not enc_ok:
-            final_out_name = f"{name}_I({val_str_name}).png" if val_str_name else f"{name}_I().png"
-            _, buf = cv2.imencode(".png", annotated)
-
-        # 寫入圖片（使用最終實際檔名）
-        z.writestr(f"DONE/{final_out_name}", buf.tobytes())
-
-        # 摘要行使用「實際輸出的檔名」確保同步
-        lines.append(f"{status},{idx},{final_out_name},{val_str}")
-        idx += 1
-
-      # 生成 _summary.txt（UTF-8 BOM，Excel 友善）
-      header = "狀態,序號,檔名,偵測值 (mA)"
-      summary_content = "\ufeff" + header + "\n" + "\n".join(lines)
-      z.writestr("DONE/_summary.txt", summary_content.encode("utf-8"))
-
+        # Walk DONE_DIR
+        for root, dirs, files in os.walk(DONE_DIR):
+            for file in files:
+                abs_path = os.path.join(root, file)
+                rel_path = os.path.relpath(abs_path, OUTPUT_DIR) # rel to OUTPUT so it starts with DONE/
+                z.write(abs_path, arcname=rel_path)
+    
     out_zip.seek(0)
     headers = {"Content-Disposition": "attachment; filename=results.zip"}
     return StreamingResponse(out_zip, media_type="application/zip", headers=headers)
+
+
+
