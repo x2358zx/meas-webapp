@@ -370,62 +370,201 @@ def _annotate(img_bgr, points_ma, cfg):
         cv2.circle(out, (int(x), int(y)), 5, (0,0,255), -1)
     return out
 
-def process_one_image(img_bgr, filename=""): # 2026/1/1
+def _check_rising_edge(mask, x1, x2):
+    h, w = mask.shape
+    x1, x2 = max(0, int(x1)), min(w, int(x2))
+    if x2 <= x1: return False
+    
+    ROI = mask[:, x1:x2]
+    w_roi = x2 - x1
+    
+    # Check left 1/3 and right 1/3
+    split_L = int(w_roi * 0.33)
+    split_R = int(w_roi * 0.66)
+    
+    strip_L = ROI[:, :split_L]
+    strip_R = ROI[:, split_R:]
+    
+    def get_mean_y(strip):
+        c = cv2.findNonZero(strip)
+        if c is None: return None
+        return np.mean(c[:, 0, 1])
+        
+    y_L = get_mean_y(strip_L)
+    y_R = get_mean_y(strip_R)
+    
+    if y_L is None or y_R is None: return False
+    
+    # Rising edge: Y should decrease (High Y -> Low Y)
+    # y_L > y_R
+    return (y_L - y_R) > 5 # Minimal threshold
+
+def process_one_image(img_bgr, filename="", override_config=None, calibration_threshold=None): # 2026/1/9
     cfg = load_config()
+    if override_config:
+        if "manual_grid_settings" in override_config:
+            cfg["manual_grid_settings"].update(override_config["manual_grid_settings"])
+        if "overlay_labels" in override_config:
+            cfg["overlay_labels"] = override_config["overlay_labels"]
+
     top, bottom, left, right = _detect_grid_coords(cfg)
     major_h, major_v, y_step, x_step = _compute_major_lines(top, bottom, left, right)
     ref_idx = int(cfg["manual_grid_settings"]["ref_0ma_index"])
     ma_div = extract_ma_div_from_filename(filename) or float(cfg["manual_grid_settings"]["ma_per_division"])
     
-    # 1. 偵測綠色 mask
     mask_green = _detect_green_mask(img_bgr, cfg)
     
-    # 2. 偵測黃色 mask (限制在 Grid 內) 與 三個關鍵點
-    mask_yellow = _detect_yellow_mask(img_bgr, cfg, grid_limits=(top, bottom, left, right))
-    target_xs = _analyze_clk_pulse(mask_yellow, x_step)
+    # Check Manual Lines
+    manual_clk = cfg["manual_grid_settings"].get("clk_lines")
+    manual_meas = cfg["manual_grid_settings"].get("meas_lines")
     
-    # 計算電流參數
-    px_per_div_v = (bottom - top) / 8.0
-    ma_per_px = ma_div / px_per_div_v if px_per_div_v > 1e-9 else 0.0
-    y0_ref = major_h[ref_idx]
-    
+    result_status = "成功"
     points_ma = []
+    calculated_thresh = None
     
-    # 若有偵測到 CLK 三點，就只測這三點
-    if target_xs:
-        for tx in target_xs:
-            gy = _get_green_y_at_x(mask_green, tx)
-            if gy is not None:
-                # 計算 mA
-                # 注意：y 越小(上方) 電流越大? 
-                # 示波器圖通常上面是正電流，下面是負? 
-                # y0 是 0mA 線。
-                # 公式：current = (y0 - y) * ma_per_px
-                # 若 y < y0 (在上方) -> current > 0.
-                val = (y0_ref - gy) * ma_per_px
-                points_ma.append((tx, gy, float(val)))
-            else:
-                # 該點沒綠線，略過或補 0? 暫時略過
-                pass
-    else:
-        # Fallback: 若沒黃線或失敗，是否維持原邏輯?
-        # 用戶目標是「新增偵測CLK黃線...總共會有三次...」
-        # 若失敗，這裡保持空列表，或者 fallback 到舊邏輯?
-        # 為了安全，若沒偵測到黃線，回傳空比較好，避免誤導。
-        # 不過舊邏輯 `_find_flat_levels` 是找所有綠色平坦段。
-        # 暫時回傳空。
-        pass
+    if manual_clk and len(manual_clk) == 2 and manual_meas and len(manual_meas) == 3:
+        # Manual Logic
+        mask_yellow = _detect_yellow_mask(img_bgr, cfg, grid_limits=None) # Global mask
+        is_rising = _check_rising_edge(mask_yellow, manual_clk[0], manual_clk[1])
         
+        if not is_rising:
+            result_status = "失敗: 無上升邊緣"
+            # Draw FAIL indicator on image
+            cv2.putText(img_bgr, "FAIL: No Rising Edge", (int(left)+20, int(top)+50), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+        else:
+            # 2026/01/09: First Image Calibration Logic
+            
+            # 1. Determine Threshold
+            if calibration_threshold is not None:
+                # Locked Mode
+                y_thresh = calibration_threshold
+            else:
+                # Calibration Mode (First Image)
+                # Find Yellow Ref Line (0V)
+                ref_idx_y = int(cfg["manual_grid_settings"].get("ref_0ma_index_yellow", 7))
+                y_ref_yellow = major_h[ref_idx_y] if ref_idx_y < len(major_h) else bottom
+                
+                # Find Peak High (Min Y) from mask
+                y_coords = cv2.findNonZero(mask_yellow)
+                if y_coords is not None:
+                    ys = y_coords[:, 0, 1]
+                    y_min = np.min(ys)
+                    # Thresh = (Peak + Baseline) / 2
+                    y_thresh = (y_min + y_ref_yellow) / 2.0
+                else:
+                    y_thresh = y_ref_yellow # Fallback (should be rare if is_rising passed)
+                
+                calculated_thresh = y_thresh
+
+            # Measure at manual points
+            # Measure at manual points
+            for tx in manual_meas:
+                 # Check logic
+                 in_yellow_range = (manual_clk[0] <= tx <= manual_clk[1])
+                 if in_yellow_range:
+                     # Check Yellow Level at tx
+                     y_at_tx = _get_green_y_at_x(mask_yellow, tx, window=5) # Reuse helper for yellow mask
+                     if y_at_tx is not None and y_at_tx > y_thresh:
+                         # Yellow is Low (Y is large) -> FAIL
+                         result_status = "失敗: 黃色訊號未抬升"
+                         cv2.putText(img_bgr, "FAIL: Yellow Not Lifted", (int(left)+20, int(top)+150), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+                         points_ma = [] # Clear points
+                         break
+
+                 gy = _get_green_y_at_x(mask_green, tx)
+                 if gy is not None:
+                      y0 = major_h[ref_idx]
+                      px_per_div_v = (bottom - top) / 8.0
+                      ma_per_px = ma_div / px_per_div_v if px_per_div_v > 1e-9 else 0.0
+                      val = (y0 - gy) * ma_per_px
+                      points_ma.append((tx, gy, float(val)))
+            
+            # If FAIL, ensure points_ma is empty (redundant safety)
+            if result_status != "成功":
+                points_ma = []
+            
+            # If any point is missing (green line not found), treat as FAIL
+            elif len(points_ma) < len(manual_meas):
+                result_status = "失敗: 缺少測量點"
+                cv2.putText(img_bgr, "FAIL: Missing Meas Point", (int(left)+20, int(top)+100), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+                points_ma = [] # Clear points on this fail too
+    else:
+        # Auto Logic (Legacy)
+        mask_yellow = _detect_yellow_mask(img_bgr, cfg, grid_limits=(top, bottom, left, right))
+        target_xs = _analyze_clk_pulse(mask_yellow, x_step)
+        
+        px_per_div_v = (bottom - top) / 8.0
+        ma_per_px = ma_div / px_per_div_v if px_per_div_v > 1e-9 else 0.0
+        y0_ref = major_h[ref_idx]
+        
+        if target_xs:
+            for tx in target_xs:
+                gy = _get_green_y_at_x(mask_green, tx)
+                if gy is not None:
+                    val = (y0_ref - gy) * ma_per_px
+                    points_ma.append((tx, gy, float(val)))
+    
     annotated = _annotate(img_bgr, points_ma, cfg)
     
-    # 標籤與電壓
+    # 2026/01/09: Draw ID on Result
+    # Get ID from filename (index 7) or fallback
+    display_id_str = ""
+    try:
+        parts = os.path.basename(filename).split('_')
+        if len(parts) >= 8:
+             raw_id = parts[7]
+             # Remove extension if present (e.g. L0569.jpg -> L0569)
+             if '.' in raw_id:
+                 raw_id = os.path.splitext(raw_id)[0]
+             display_id_str = f"{raw_id}"
+    except:
+        pass
+        
+    if display_id_str:
+        # Get Pos from Config
+        id_pos = cfg["manual_grid_settings"].get("id_label_pos")
+        # Default if missing: Bottom Center
+        if not id_pos:
+            h, w = img_bgr.shape[:2]
+            id_pos = {"x": w // 2, "y": h - 20}
+            
+        cx = int(id_pos["x"])
+        cy = int(id_pos["y"])
+        
+        # Match frontend "bold 24px monospace"
+        # OpenCV Simplex 1.0 is ~30px. 0.8 is ~24px.
+        font_face = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.8
+        thickness_fg = 2  # Bold
+        thickness_bg = 4  # Outline
+        
+        # Calculate size to center
+        (text_w, text_h), baseline = cv2.getTextSize(display_id_str, font_face, font_scale, thickness_fg)
+        
+        origin_x = cx - text_w // 2
+        origin_y = cy # Frontend y is baseline, OpenCV y is baseline. So Cy is correct.
+        
+        # Draw Outline (Black)
+        cv2.putText(annotated, display_id_str, (origin_x, origin_y), 
+                    font_face, font_scale, (0, 0, 0), thickness_bg, cv2.LINE_AA)
+                    
+        # Draw Text (White)
+        cv2.putText(annotated, display_id_str, (origin_x, origin_y), 
+                    font_face, font_scale, (255, 255, 255), thickness_fg, cv2.LINE_AA)
+    
+    # labels
     vdd_from_name = extract_v_from_filename(filename)
     _draw_reference_labels_only(annotated, cfg, vdd_value_from_filename=vdd_from_name)
 
     return annotated, {
         "levels_detected": len(points_ma),
         "values_mA": [v for _,_,v in points_ma],
-        "used_ma_per_div": ma_div
+        "used_ma_per_div": ma_div,
+        "status": result_status,
+        "calculated_threshold": calculated_thresh
     }
 
 

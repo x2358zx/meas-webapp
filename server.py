@@ -1,7 +1,7 @@
-import io, json, zipfile, os, shutil
+import io, json, zipfile, os, shutil, time
 from typing import List, Optional, Generator
 import numpy as np, cv2
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +14,7 @@ def format_ma_for_name(value: float, decimals: int = 2) -> str: # 2026/1/2
     return s.replace(".", "p") + "mA"                    # "3.50" -> "3p50mA"
 
 
-app = FastAPI(title="Meas Web API", version="1.1")
+app = FastAPI(title="Meas Web API", version="1.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -87,22 +87,84 @@ async def api_preview_grid(
 
 # --- New Streaming Logic ---
 
-def clean_output_dir():
-    """Clear previous results"""
-    if os.path.exists(DONE_DIR):
-        shutil.rmtree(DONE_DIR)
-    os.makedirs(DONE_DIR, exist_ok=True)
+def cleanup_old_sessions():
+    """Remove session directories older than 1 hour to prevent disk fill-up."""
+    try:
+        now = time.time()
+        cutoff = now - 3600  # 1 hour
+        if not os.path.exists(DONE_DIR):
+            return
+            
+        for item in os.listdir(DONE_DIR):
+            path = os.path.join(DONE_DIR, item)
+            if os.path.isdir(path):
+                # Check mtime
+                try:
+                    mtime = os.path.getmtime(path)
+                    if mtime < cutoff:
+                        shutil.rmtree(path)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+
+def ensure_session_dir(session_id: str):
+    """Ensure {DONE_DIR}/{session_id} exists."""
+    # Build path and ensure it's inside DONE_DIR to prevent traversal
+    # Simple check: session_id shouldn't contain path separators
+    safe_id = os.path.basename(session_id)
+    path = os.path.join(DONE_DIR, safe_id)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 @app.post("/api/process_stream")
-async def api_process_stream(files: List[UploadFile] = File(...)):
+async def api_process_stream(
+    files: List[UploadFile] = File(...),
+    session_id: str = Form(...),
+    grid_config: Optional[str] = Form(None)
+):
     """
     接收圖片，串流回傳處理結果 (SSE format)。
-    同時將結果存檔至 /app/OUTPUT/DONE 供後續下載。
+    支援 Session ID 分離不同使用者的資料。
     """
-    clean_output_dir()
+    # 1. Cleanup old sessions occasionally
+    cleanup_old_sessions()
+
+    # 2. Ensure session directory
+    session_dir = ensure_session_dir(session_id)
     
+    # Sort files by ID (Index 7) to ensure consistency
+    def get_sort_key(file):
+        try:
+            # Extract ID from filename (e.g. index 7)
+            parts = file.filename.split('_')
+            if len(parts) >= 8:
+                raw_id = parts[7]
+                if '.' in raw_id:
+                     raw_id = raw_id.rsplit('.', 1)[0]
+                return raw_id
+        except:
+            pass
+        return file.filename
+        
+    files.sort(key=get_sort_key)
+    
+    # Parse override config if present
+    override_cfg = None
+    if grid_config:
+        try:
+            override_cfg = json.loads(grid_config)
+        except Exception as e:
+            print(f"Error parsing grid_config: {e}")
+
     # Summary data collection
     lines = [] 
+    
+    # Global Session Calibration (In-Memory)
+    global SESSION_CALIBRATION
+    if "SESSION_CALIBRATION" not in globals():
+        SESSION_CALIBRATION = {}
+    
     idx = 1
     
     async def process_generator():
@@ -112,11 +174,26 @@ async def api_process_stream(files: List[UploadFile] = File(...)):
                 data = await f.read()
                 img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
                 
+                # Check Calibration
+                calib_thresh = None
+                if session_id in SESSION_CALIBRATION:
+                    calib_thresh = SESSION_CALIBRATION[session_id]
+                
                 # Processing
-                annotated, info = process_one_image(img, f.filename)
+                annotated, info = process_one_image(img, f.filename, override_config=override_cfg, calibration_threshold=calib_thresh)
+                
+                # Update Calibration if First Image
+                if calib_thresh is None and "calculated_threshold" in info:
+                     t = info["calculated_threshold"]
+                     if t is not None:
+                         SESSION_CALIBRATION[session_id] = t
+                         print(f"Session {session_id} Calibrated Thresh: {t}")
                 
                 # Status & Values
-                status = "成功" if info.get("levels_detected", 0) > 0 else "失敗"
+                if "status" in info:
+                    status = info["status"]
+                else:
+                    status = "成功" if info.get("levels_detected", 0) > 0 else "失敗"
                 vals = info.get("values_mA", [])
                 
                 val_str = ""
@@ -143,23 +220,26 @@ async def api_process_stream(files: List[UploadFile] = File(...)):
                     final_out_name = f"{name}_I({val_str_name}).png" if val_str_name else f"{name}_I().png"
                     _, buf = cv2.imencode(".png", annotated)
                 
-                # Save to disk
-                save_path = os.path.join(DONE_DIR, final_out_name)
+                # Save to disk (Session Directory)
+                save_path = os.path.join(session_dir, final_out_name)
                 with open(save_path, "wb") as out_f:
                     out_f.write(buf.tobytes())
                 
-                # Record Summary
-                lines.append(f"{status},{idx},{final_out_name},{val_str}")
+                # Record Summary (Only Success)
+                if status.startswith("成功") or status == "Success":
+                    lines.append(f"{status},{idx},{final_out_name},{val_str}")
                 idx += 1
                 
                 # Prepare JSON response
-                # img_url: points to static mount /output/DONE/filename
+                # img_url: points to static mount /output/DONE/{session_id}/{filename}
+                # Warning: We need to use safe_id logic again or ensure session_id is safe
+                safe_id = os.path.basename(session_id)
                 resp_data = {
-                    "id": idx, # Simple counter ID
+                    "id": idx, # Simple counter ID (per batch)
                     "filename": final_out_name,
                     "status": status,
                     "values": vals,
-                    "img_url": f"/output/DONE/{final_out_name}"
+                    "img_url": f"/output/DONE/{safe_id}/{final_out_name}"
                 }
                 
                 # Yield SSE data line
@@ -175,12 +255,18 @@ async def api_process_stream(files: List[UploadFile] = File(...)):
                 }
                 yield f"data: {json.dumps(err_data)}\n\n"
 
-        # Final Summary File
+        # Final Summary File (Append Mode)
         try:
-            header = "狀態,序號,檔名,偵測值 (mA)"
-            summary_content = "\ufeff" + header + "\n" + "\n".join(lines)
-            with open(os.path.join(DONE_DIR, "_summary.txt"), "w", encoding="utf-8") as sum_f:
-                sum_f.write(summary_content)
+            summary_path = os.path.join(session_dir, "_summary.txt")
+            is_new = not os.path.exists(summary_path)
+            
+            with open(summary_path, "a", encoding="utf-8") as sum_f:
+                if is_new:
+                    header = "狀態,序號,檔名,偵測值 (mA)"
+                    sum_f.write("\ufeff" + header + "\n")
+                if lines:
+                    sum_f.write("\n".join(lines) + "\n")
+                    
         except Exception as e:
             print(f"Summary write error: {e}")
 
@@ -191,25 +277,48 @@ async def api_process_stream(files: List[UploadFile] = File(...)):
 
 
 @app.get("/api/results/zip")
-def api_results_zip():
+def api_results_zip(session_id: str = Query(...)):
     """
-    Pack /app/OUTPUT/DONE into a zip file for download.
+    Pack /app/OUTPUT/DONE/{session_id} into a zip file for download.
     """
-    if not os.path.exists(DONE_DIR):
-        return {"error": "No results found"}
+    # Ensure safe session id access
+    safe_id = os.path.basename(session_id)
+    target_dir = os.path.join(DONE_DIR, safe_id)
+    summary_path = os.path.join(target_dir, "_summary.txt")
+    
+    if not os.path.exists(target_dir):
+        return {"error": "No results found for this session"}
         
+    # Read valid files from summary
+    valid_files = set()
+    if os.path.exists(summary_path):
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split(',')
+                    if len(parts) >= 3 and parts[2].endswith(('.png', '.jpg', '.jpeg')):
+                        valid_files.add(parts[2])
+        except:
+            pass
+            
     out_zip = io.BytesIO()
     with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as z:
-        # Walk DONE_DIR
-        for root, dirs, files in os.walk(DONE_DIR):
-            for file in files:
-                abs_path = os.path.join(root, file)
-                rel_path = os.path.relpath(abs_path, OUTPUT_DIR) # rel to OUTPUT so it starts with DONE/
-                z.write(abs_path, arcname=rel_path)
-    
+        # 1. Add Summary
+        if os.path.exists(summary_path):
+            z.write(summary_path, arcname="_summary.txt")
+            
+        # 2. Add Valid Images
+        for fname in valid_files:
+            fpath = os.path.join(target_dir, fname)
+            if os.path.exists(fpath):
+                z.write(fpath, arcname=fname)
+                
     out_zip.seek(0)
-    headers = {"Content-Disposition": "attachment; filename=results.zip"}
-    return StreamingResponse(out_zip, media_type="application/zip", headers=headers)
-
-
-
+    
+    # Format: "current probe results_YYYYMMDDHHMM.zip" (UTC+8)
+    from datetime import datetime, timedelta
+    # Docker uses UTC by default, so we add 8 hours for Taiwan Time
+    timestamp = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y%m%d%H%M")
+    filename = f"current probe results_{timestamp}.zip"
+    
+    return StreamingResponse(out_zip, media_type="application/zip", headers={"Content-Disposition": f"attachment; filename={filename}"})
